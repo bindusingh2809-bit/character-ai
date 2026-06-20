@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body {
+  background-color: #0b0e14;
+  color: #e7e9ee;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: rgba(124, 92, 255, 0.35);
+}
+
+/* thin, quiet scrollbars to match the workbench feel */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #252b3a;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a4257;
+}
+
+.canvas-checker {
+  background-image:
+    linear-gradient(45deg, #11151f 25%, transparent 25%),
+    linear-gradient(-45deg, #11151f 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #11151f 75%),
+    linear-gradient(-45deg, transparent 75%, #11151f 75%);
+  background-size: 24px 24px;
+  background-position: 0 0, 0 12px, 12px -12px, -12px 0px;
+  background-color: #0a0d12;
+}
+
+.focus-ring:focus-visible {
+  outline: 2px solid #7c5cff;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
