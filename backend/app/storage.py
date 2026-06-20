@@ -1,104 +1,116 @@
-"""All persistence is plain files/folders under storage/. No database.
+"""
+Simple filesystem-backed storage for characters.
 
-storage/
-  projects/{project_id}/
-    original.png
-    character.json
-    bones.json
-    mesh.json
+Layout, matching the planning doc:
+
+storage/characters/<character_id>/
+    original.<ext>
+    skeleton.json
     animations.json
-    status.json
-    segmented/   <- head.png, torso.png, arm_left.png, ...
-    previews/
-    exports/
-  temp/
 """
 from __future__ import annotations
+
 import json
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Optional
 
-STORAGE_ROOT = Path(__file__).resolve().parent.parent / "storage"
-PROJECTS_DIR = STORAGE_ROOT / "projects"
-TEMP_DIR = STORAGE_ROOT / "temp"
+from app.models import Skeleton, Bone
+from app.config import settings
 
-PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
-TEMP_DIR.mkdir(parents=True, exist_ok=True)
-
-
-class ProjectNotFound(Exception):
-    pass
+STORAGE_ROOT = settings.storage_path.parent
+CHARACTERS_DIR = settings.storage_path
+CHARACTERS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def new_project_id() -> str:
+def new_character_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def project_dir(project_id: str) -> Path:
-    return PROJECTS_DIR / project_id
+def character_dir(character_id: str) -> Path:
+    return CHARACTERS_DIR / character_id
 
 
-def require_project(project_id: str) -> Path:
-    d = project_dir(project_id)
+def save_upload(character_id: str, filename: str, data: bytes) -> Path:
+    ext = Path(filename).suffix.lower() or ".png"
+    d = character_dir(character_id)
+    d.mkdir(parents=True, exist_ok=True)
+    dest = d / f"original{ext}"
+    dest.write_bytes(data)
+    return dest
+
+
+def find_original_image(character_id: str) -> Optional[Path]:
+    d = character_dir(character_id)
     if not d.exists():
-        raise ProjectNotFound(project_id)
-    return d
+        return None
+    for p in d.glob("original.*"):
+        return p
+    return None
 
 
-def create_project_dirs(project_id: str) -> Path:
-    d = project_dir(project_id)
-    (d / "segmented").mkdir(parents=True, exist_ok=True)
-    (d / "previews").mkdir(parents=True, exist_ok=True)
-    (d / "exports").mkdir(parents=True, exist_ok=True)
-    return d
+def skeleton_path(character_id: str) -> Path:
+    return character_dir(character_id) / "skeleton.json"
 
 
-def read_json(path: Path, default: Any = None) -> Any:
-    if not path.exists():
-        return default
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+def save_skeleton(skeleton: Skeleton) -> None:
+    p = skeleton_path(skeleton.character_id)
+    p.write_text(skeleton.model_dump_json(indent=2))
 
 
-def write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+def load_skeleton(character_id: str) -> Optional[Skeleton]:
+    p = skeleton_path(character_id)
+    if not p.exists():
+        return None
+    return Skeleton.model_validate_json(p.read_text())
 
 
-def get_status(project_id: str) -> dict:
-    d = require_project(project_id)
-    return read_json(d / "status.json", {
-        "project_id": project_id, "status": "created", "progress": 0.0, "message": "", "error": None
-    })
+def default_skeleton(character_id: str, name: str, width: int, height: int) -> Skeleton:
+    """A brand new character starts with a single root bone in the middle."""
+    root = Bone(
+        id=uuid.uuid4().hex[:8],
+        name="root",
+        parent_id=None,
+        x=width / 2,
+        y=height / 2,
+        rotation=0,
+        length=min(width, height) * 0.25,
+    )
+    return Skeleton(
+        character_id=character_id,
+        name=name,
+        image_width=width,
+        image_height=height,
+        bones=[root],
+    )
 
 
-def set_status(project_id: str, **kwargs) -> dict:
-    d = require_project(project_id)
-    current = get_status(project_id)
-    current.update(kwargs)
-    write_json(d / "status.json", current)
-    return current
+def list_characters() -> list[dict]:
+    out = []
+    if not CHARACTERS_DIR.exists():
+        return out
+    for d in sorted(CHARACTERS_DIR.iterdir()):
+        if not d.is_dir():
+            continue
+        skel = load_skeleton(d.name)
+        img = find_original_image(d.name)
+        if skel is None or img is None:
+            continue
+        out.append(
+            {
+                "id": d.name,
+                "name": skel.name,
+                "image_url": f"/media/characters/{d.name}/{img.name}",
+                "bone_count": len(skel.bones),
+            }
+        )
+    return out
 
 
-def get_character(project_id: str) -> dict:
-    d = require_project(project_id)
-    return read_json(d / "character.json", {
-        "id": project_id, "name": "Character", "assets": {}, "bones": [], "mesh": [], "animations": []
-    })
-
-
-def save_character(project_id: str, character: dict) -> None:
-    d = require_project(project_id)
-    write_json(d / "character.json", character)
-
-
-def make_export_zip(project_id: str) -> Path:
-    d = require_project(project_id)
-    exports = d / "exports"
-    exports.mkdir(exist_ok=True)
-    out_base = exports / f"{project_id}_export"
-    archive = shutil.make_archive(str(out_base), "zip", root_dir=d, base_dir=".")
-    return Path(archive)
+def delete_character(character_id: str) -> bool:
+    d = character_dir(character_id)
+    if not d.exists():
+        return False
+    shutil.rmtree(d)
+    return True

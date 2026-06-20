@@ -1,68 +1,48 @@
-"""Pydantic models used across the API. No database — these mirror the
-JSON files we persist under storage/projects/{project_id}/."""
+"""
+Pydantic models for the "Universal Rig Format" (URF).
 
+This is YOUR rig format (referred to in the planning doc as .mychar / .drig).
+It is intentionally simple right now (bones + a single texture). Mesh
+deformation, weights and per-vertex skinning can be layered on top of this
+later without breaking the shape of the file.
+"""
 from __future__ import annotations
-from typing import Optional, Literal
+
+from typing import List, Optional
 from pydantic import BaseModel, Field
-
-
-class ProjectMeta(BaseModel):
-    id: str
-    name: str = "Character"
-    status: Literal["created", "segmented", "rigged", "meshed", "animated", "error"] = "created"
-    width: int = 0
-    height: int = 0
-
-
-class BonePoint(BaseModel):
-    x: float
-    y: float
 
 
 class Bone(BaseModel):
     id: str
     name: str
-    parent: Optional[str] = None
-    start: BonePoint
-    end: BonePoint
-    part: str  # which segmented layer this bone drives, e.g. "torso"
+    parent_id: Optional[str] = None
+    # Root bones use (x, y) as their world position.
+    # Child bones are positioned at their parent's tip, so x/y are ignored
+    # for them (kept at 0) and only rotation/length matter.
+    x: float = 0
+    y: float = 0
+    rotation: float = 0  # radians, relative to parent
+    length: float = 80
 
 
-class MeshVertex(BaseModel):
-    x: float
-    y: float
-    # bone weights: {bone_id: weight}, weights sum to ~1.0
-    weights: dict[str, float] = Field(default_factory=dict)
-
-
-class PartMesh(BaseModel):
-    part: str
-    vertices: list[MeshVertex]
-    triangles: list[list[int]]  # indices into vertices, 3 per triangle
-
-
-class Keyframe(BaseModel):
-    time: float  # seconds, 0..duration
-    # bone_id -> {x, y, rotation (deg), scale}
-    bones: dict[str, dict[str, float]]
-
-
-class Animation(BaseModel):
+class CharacterMeta(BaseModel):
+    id: str
     name: str
-    duration: float
-    loop: bool = True
-    keyframes: list[Keyframe]
+    image_url: str
+    image_width: int
+    image_height: int
 
 
-class StatusResponse(BaseModel):
-    project_id: str
-    status: str
-    progress: float = 0.0
-    message: str = ""
-    error: Optional[str] = None
+class Skeleton(BaseModel):
+    character_id: str
+    name: str
+    image_width: int
+    image_height: int
+    bones: List[Bone] = Field(default_factory=list)
 
 
-class UploadResponse(BaseModel):
-    project_id: str
-    width: int
-    height: int
+class CharacterListItem(BaseModel):
+    id: str
+    name: str
+    image_url: str
+    bone_count: int
