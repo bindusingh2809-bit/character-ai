@@ -65,6 +65,10 @@ class PortkeyAnimationProvider(AnimationProvider):
         self.base_url = os.environ.get("PORTKEY_BASE_URL", "https://api.portkey.ai/v1")
         self.default_model = os.environ.get("OPENROUTER_MODEL", "openrouter/qwen/qwen-2.5-72b-instruct")
         self.virtual_key = os.environ.get("PORTKEY_VIRTUAL_KEY")  # optional, for OpenRouter via Portkey
+        # Slug of a saved Portkey integration (Dashboard > Integrations), e.g. "openrouter-prod".
+        # Required when the Portkey org has block_inline_config enabled, since inline
+        # provider names (x-portkey-provider: openrouter) are then rejected with a 400.
+        self.provider_slug = os.environ.get("PORTKEY_PROVIDER_SLUG")
         self.timeout = float(os.environ.get("PORTKEY_TIMEOUT_SECONDS", "20"))
 
         if not self.api_key:
@@ -78,16 +82,35 @@ class PortkeyAnimationProvider(AnimationProvider):
                 "PORTKEY_API_KEY is not configured on the server."
             )
 
+        model_to_use = model or self.default_model
+
         headers = {
             "Content-Type": "application/json",
             "x-portkey-api-key": self.api_key,
-            "x-portkey-provider": "openrouter",
         }
-        if self.virtual_key:
+
+        model_has_inline_slug = model_to_use.startswith("@")
+
+        if model_has_inline_slug:
+            # Model string already carries the integration, e.g. "@google/gemini-3.5-flash".
+            # Portkey's passthrough resolution reads the slug straight from the model
+            # field in this case — don't also send x-portkey-provider or it conflicts.
+            pass
+        elif self.provider_slug:
+            # Saved-integration form required when block_inline_config is on.
+            # Portkey resolves the slug after "@" as the virtual key/integration.
+            headers["x-portkey-provider"] = f"@{self.provider_slug}"
+        elif self.virtual_key:
+            headers["x-portkey-virtual-key"] = self.virtual_key
+        else:
+            headers["x-portkey-provider"] = "openrouter"  # legacy inline form; fails if org blocks it
+
+        if self.virtual_key and self.provider_slug and not model_has_inline_slug:
+            # Both set: virtual key still useful for routing/auth alongside the slug'd provider.
             headers["x-portkey-virtual-key"] = self.virtual_key
 
         body = {
-            "model": model or self.default_model,
+            "model": model_to_use,
             "messages": [
                 {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{JSON_SCHEMA_HINT}"},
                 {"role": "user", "content": prompt},

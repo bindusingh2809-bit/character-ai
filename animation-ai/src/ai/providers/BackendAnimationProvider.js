@@ -2,7 +2,9 @@ import { AnimationProvider } from './AnimationProvider';
 import { parseAnimationPlan } from '../animationModels';
 
 const DEFAULT_BASE_URL = import.meta.env?.VITE_AI_BACKEND_URL || 'http://localhost:8000';
-const TIMEOUT_MS = 20000;
+// 130s — CPU-only inference in constrained environments (e.g. GitHub
+// Codespaces, no GPU) can be considerably slower than a hosted API.
+const TIMEOUT_MS = 130000;
 
 /**
  * BackendAnimationProvider — calls the FastAPI backend's /api/generate-animation
@@ -11,9 +13,12 @@ const TIMEOUT_MS = 20000;
  */
 export class BackendAnimationProvider extends AnimationProvider {
   constructor({ baseUrl = DEFAULT_BASE_URL } = {}) {
-  super();
-  this.baseUrl = baseUrl.replace(/\/+$/, '');
-}
+    super();
+    // Strip any trailing slash(es) so `${baseUrl}/api/...` never produces
+    // a double slash (e.g. "http://host:8000/" + "/api/..." -> "...//api/...",
+    // which FastAPI 404s on since it doesn't normalize double slashes).
+    this.baseUrl = baseUrl.replace(/\/+$/, '');
+  }
 
   async generate(prompt) {
     if (!prompt || !prompt.trim()) {
