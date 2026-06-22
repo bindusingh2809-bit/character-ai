@@ -7,7 +7,7 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 animation-ai/node_modules/
-backend
+
 backups
 node_modules
 dist
