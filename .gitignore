@@ -8,3 +8,4 @@ backend/storage/characters/*
 !backend/storage/characters/.gitkeep
 .env
 .DS_Store
+animation-ai/node_modules
