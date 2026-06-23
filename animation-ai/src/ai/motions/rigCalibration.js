@@ -272,13 +272,20 @@ export function rotationForTarget(calib, targetAngleDeg, currentRotation = 0) {
  * @param {string} side 'left' | 'right'
  */
 export function namedDirectionAngle(name, side) {
+  // NOTE ON LEFT/RIGHT CONVENTION:
+  // 'side' is anatomical (the character's own right/left), matching how
+  // boneMapping.js matches layer names and how splitLR.js defines
+  // character's-right = lower screen-X (viewer's left), since the
+  // character faces the viewer. So the character's right arm/leg sits on
+  // the LEFT side of the screen, and "outward" (away from the torso) for
+  // it points toward screen-left/up-left, not screen-right.
   switch (name) {
     case 'up':       return -90;                                // straight up
-    case 'up_out':   return side === 'right' ? -45 : -135;       // raised, angled outward
-    case 'forward':  return side === 'right' ? -10 : -170;       // ~horizontal, outward
-    case 'down_out': return side === 'right' ? 45 : 135;         // lowered, angled outward
+    case 'up_out':   return side === 'right' ? -135 : -45;       // raised, angled outward
+    case 'forward':  return side === 'right' ? -170 : -10;       // ~horizontal, outward
+    case 'down_out': return side === 'right' ? 135 : 45;         // lowered, angled outward
     case 'down':     return 90;                                  // hanging at rest
-    case 'across':   return side === 'right' ? 135 : 45;         // reaching toward other shoulder
+    case 'across':   return side === 'right' ? 45 : 135;         // reaching toward other shoulder
     default:         return 90;
   }
 }
