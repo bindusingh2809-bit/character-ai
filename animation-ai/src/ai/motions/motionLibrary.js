@@ -116,10 +116,16 @@ export function createWaveMotion(boneMap, opts = {}) {
   const count = opts.count ?? Math.max(2, Math.round((opts.duration ?? 1400) / cycleMs));
   const tracks = [];
   if (arm) {
-    const sign = side === 'left' ? -1 : 1;
+    // In 2D canvas: positive rotation = clockwise (arm goes DOWN/inward).
+    // To raise arm upward, right arm needs negative (CCW), left arm positive (CW).
+    const raiseAngle = side === 'right' ? -90 : 90;
+    // Wave oscillates ±20° around the raised position
+    const waveA = raiseAngle - 20;
+    const waveB = raiseAngle + 20;
     tracks.push(track(arm, 'rotation', [
-      [0, 0], [120, sign * -90],
-      ...repeatCycle([[0, sign * -90], [cycleMs / 2, sign * -70], [cycleMs, sign * -90]], cycleMs, count).map(
+      [0, 0],
+      [120, raiseAngle],
+      ...repeatCycle([[0, raiseAngle], [cycleMs / 2, waveA], [cycleMs, waveB]], cycleMs, count).map(
         ([t, v]) => [t + 120, v],
       ),
       [120 + count * cycleMs + 150, 0],

@@ -50,10 +50,14 @@ Never return markdown.
 Return action sequences only."""
 
 JSON_SCHEMA_HINT = (
-    'Respond with exactly this shape and nothing else: '
-    '{"actions": [{"name": "wave", "duration": 2, "side": "right"}]}. '
-    '"duration" is seconds (optional), "side" is "left" or "right" (optional), '
-    '"count" is an optional integer repeat count.'
+    'You MUST respond with ONLY this exact JSON structure, no other text:\n'
+    '{"actions": [{"name": "wave", "duration": 2, "side": "right"}]}\n\n'
+    'Rules:\n'
+    '- "actions" key is REQUIRED (not "action")\n'
+    '- Each item MUST have "name" as a string from the allowed list\n'
+    '- "duration" (seconds, optional), "side" ("left"/"right", optional), '
+    '"count" (integer, optional)\n'
+    '- No markdown, no explanation, no extra keys. ONLY the JSON object.'
 )
 
 
@@ -77,7 +81,7 @@ class OllamaAnimationProvider(AnimationProvider):
                 {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{JSON_SCHEMA_HINT}"},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.2,
+            "temperature": 0,
             "stream": False,
         }
 
