@@ -25,9 +25,13 @@ export class UnsupportedActionError extends Error {
  *
  * @param {AnimationPlan} plan
  * @param {Record<string,string|null>} boneMap role -> nodeId
+ * @param {Record<string,object|null>} calibration role -> LimbCalibration|null,
+ *        from rigCalibration.calibrateRig(boneMap, project.nodes). Required so
+ *        directional motions (wave, point, jump's arm swing, etc.) rotate limbs
+ *        the correct way for THIS rig instead of assuming a fixed angle.
  * @returns {{ tracks: Array, duration: number }}
  */
-export function generateTimeline(plan, boneMap) {
+export function generateTimeline(plan, boneMap, calibration = {}) {
   if (!plan || !Array.isArray(plan.actions) || plan.actions.length === 0) {
     return { tracks: [], duration: 0 };
   }
@@ -43,7 +47,7 @@ export function generateTimeline(plan, boneMap) {
     }
 
     const durationMs = action.duration != null ? Math.round(action.duration * 1000) : undefined;
-    const result = factory(boneMap, {
+    const result = factory(boneMap, calibration, {
       duration: durationMs,
       side: action.side,
       count: action.count,

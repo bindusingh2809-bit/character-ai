@@ -10,6 +10,7 @@ import { getAnimationProvider } from '@/ai/providers';
 import { parseAnimationPlan, InvalidAnimationPlanError } from '@/ai/animationModels';
 import { generateTimeline, UnsupportedActionError } from '@/ai/timelineGenerator';
 import { resolveBoneMap } from '@/ai/boneMapping';
+import { calibrateRig, getCalibrationWarnings } from '@/ai/motions/rigCalibration';
 
 const PREVIEW_NAME = '__ai_preview__';
 
@@ -32,6 +33,17 @@ export function AIAnimationPanel() {
   const mappedRoleCount = useMemo(
     () => Object.values(boneMap).filter(Boolean).length,
     [boneMap],
+  );
+  // Measures each limb's real rest direction from rig geometry so motions
+  // like "wave" or "point" rotate the right way for THIS character instead
+  // of assuming every rig's arm hangs at the same fixed angle.
+  const calibration = useMemo(
+    () => calibrateRig(boneMap, project.nodes),
+    [boneMap, project.nodes],
+  );
+  const calibrationWarnings = useMemo(
+    () => getCalibrationWarnings(calibration),
+    [calibration],
   );
 
   const clearPreview = () => {
@@ -71,7 +83,7 @@ export function AIAnimationPanel() {
   const buildTimeline = () => {
     if (!plan) return null;
     try {
-      return generateTimeline(plan, boneMap);
+      return generateTimeline(plan, boneMap, calibration);
     } catch (err) {
       if (err instanceof UnsupportedActionError) {
         setError(`"${err.action}" isn't supported yet.`);
@@ -162,6 +174,19 @@ export function AIAnimationPanel() {
             <span>
               No rig parts were auto-detected (try naming nodes like "Right Arm", "Head", "Left Leg").
               Generated motion may have no visible effect.
+            </span>
+          </div>
+        )}
+
+        {mappedRoleCount > 0 && calibrationWarnings.length > 0 && (
+          <div className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+            <AlertTriangle className="size-3.5 mt-0.5 shrink-0" />
+            <span>
+              {calibrationWarnings.length === 1
+                ? calibrationWarnings[0].message
+                : `${calibrationWarnings.length} limbs (${calibrationWarnings.map(w => w.role).join(', ')}) ` +
+                  `couldn't be measured from your rig (missing elbow/hand or knee/foot bones) — ` +
+                  `directional motions for them may point the wrong way. Map those bones for accurate motion.`}
             </span>
           </div>
         )}
