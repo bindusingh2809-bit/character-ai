@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DWPose Rigging & LayerDiffusion Studio</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background: #1e1e24; 
+            color: #fff; 
+            max-width: 1200px; 
+            margin: 40px auto; 
+            padding: 20px; 
+            text-align: center; 
+        }
+        .container { 
+            background: #2a2a35; 
+            border-radius: 12px; 
+            padding: 30px; 
+            box-shadow: 0 8px 24px rgba(0,0,0,0.3); 
+        }
+        h1 { color: #4f46e5; margin-bottom: 5px; }
+        p { color: #a1a1aa; margin-bottom: 25px; }
+        
+        .upload-box { 
+            border: 2px dashed #4f46e5; 
+            padding: 30px; 
+            border-radius: 8px; 
+            background: #22222b; 
+            cursor: pointer; 
+            transition: 0.3s; 
+            margin-bottom: 20px;
+        }
+        .upload-box:hover { background: #2b2b36; }
+        input[type="file"] { display: none; }
+        
+        .btn { 
+            background: #4f46e5; 
+            color: white; 
+            border: none; 
+            padding: 12px 24px; 
+            border-radius: 6px; 
+            font-weight: bold; 
+            cursor: pointer; 
+            margin-top: 15px; 
+            display: inline-block; 
+            text-decoration: none; 
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #4338ca; }
+        .btn-secondary { background: #10b981; }
+        .btn-secondary:hover { background: #059669; }
+        
+        /* Source Preview Section Styling */
+        .source-preview-container {
+            margin: 20px auto 30px auto;
+            background: #1e1e24;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #4f46e5;
+            display: inline-block;
+            max-width: 400px;
+        }
+
+        .workspace-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 25px;
+            margin-top: 30px;
+        }
+        
+        @media (max-width: 768px) {
+            .workspace-grid { grid-template-columns: 1fr; }
+        }
+        
+        .channel-card { 
+            background: #1e1e24; 
+            padding: 20px; 
+            border-radius: 8px; 
+            border: 1px solid #3f3f46; 
+            text-align: center;
+        }
+        
+        .output-box {
+            margin-top: 15px;
+            min-height: 200px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            background: #15151a;
+            padding: 10px;
+        }
+        
+        img { 
+            max-width: 100%; 
+            max-height: 350px; 
+            border-radius: 6px; 
+            border: 1px solid #444; 
+        }
+        
+        .transparent-bg {
+            background-image: linear-gradient(45deg, #2c2c35 25%, transparent 25%), 
+                              linear-gradient(-45deg, #2c2c35 25%, transparent 25%), 
+                              linear-gradient(45deg, transparent 75%, #2c2c35 75%), 
+                              linear-gradient(-45deg, transparent 75%, #2c2c35 75%); 
+            background-size: 20px 20px; 
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+        }
+        
+        .loading { display: none; color: #fbbf24; font-weight: bold; margin: 15px 0; }
+        .status-msg { color: #10b981; font-size: 0.9em; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Character Pre-Rig & Layer Pipeline</h1>
+    <p>Upload a flat character PNG to map full-body joints or execute transparency layer processing workflows.</p>
+
+    <div class="upload-box" onclick="document.getElementById('fileInput').click()">
+        <span id="upload-text">🛡️ Click to choose or drag Master Character PNG image</span>
+        <input type="file" id="fileInput" accept="image/png">
+    </div>
+
+    <div id="sourcePreviewContainer" class="source-preview-container" style="display: none;">
+        <h3 style="margin-top: 0; color: #4f46e5;">Active Source Image</h3>
+        <img id="sourcePreviewImg" src="" alt="Source Upload Preview">
+    </div>
+
+    <div class="workspace-grid">
+        
+        <div class="channel-card">
+            <h2>1. DWPose Auto-Rigger</h2>
+            <p style="font-size: 0.85em; color: #a1a1aa;">Maps multi-joint body coordinates & structural finger templates.</p>
+            
+            <button class="btn" id="rigBtn" onclick="processRigging()">Generate Rig Template</button>
+            <div class="loading" id="rigLoading">Calculating skeleton tensors...</div>
+            
+            <div class="output-box">
+                <div id="rigPlaceholder" style="color: #52525b;">No skeleton generated yet</div>
+                <img id="previewImg" src="" alt="Skeleton Preview" style="display: none;">
+            </div>
+            <div id="rigStatus" class="status-msg"></div>
+            <a id="downloadJsonBtn" class="btn" href="" download style="display: none; margin-top:10px;">Download JSON Rig</a>
+        </div>
+
+        <div class="channel-card" style="border-color: #4f46e5;">
+            <h2>2. LayerDiffusion Channel</h2>
+            <p style="font-size: 0.85em; color: #a1a1aa;">Runs generative transparency masking over the character boundary layers.</p>
+            
+            <button class="btn btn-secondary" id="layerBtn" onclick="processLayerDiffusion()">Process Transparency Layer</button>
+            <div class="loading" id="layerLoading">Executing diffusion latent steps...</div>
+            
+            <div class="output-box transparent-bg">
+                <div id="layerPlaceholder" style="color: #52525b;">No transparency processing executed yet</div>
+                <img id="layerOutputImg" src="" alt="Transparent Layer Map" style="display: none;">
+            </div>
+            <div id="layerStatus" class="status-msg"></div>
+            <a id="downloadLayerBtn" class="btn btn-secondary" href="" download style="display: none; margin-top:10px;">Save Transparent PNG</a>
+        </div>
+
+    </div>
+</div>
+
+<script>
+    const fileInput = document.getElementById('fileInput');
+    const uploadText = document.getElementById('upload-text');
+
+    // UI Change State Monitor - Displays image inside browser memory instantly
+    fileInput.addEventListener('change', function() {
+        if(fileInput.files.length > 0) {
+            const file = fileInput.files[0];
+            uploadText.innerHTML = "🎯 <b>Active Target Asset:</b> " + file.name;
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const sourceImg = document.getElementById('sourcePreviewImg');
+                sourceImg.src = e.target.result;
+                document.getElementById('sourcePreviewContainer').style.display = 'block';
+            }
+            reader.readAsDataURL(file);
+        }
+    });
+
+    // Pipeline Engine 1: DWPose Process Caller
+    function processRigging() {
+        const file = fileInput.files[0];
+        if(!file) { alert("Please upload a character PNG file target first."); return; }
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        document.getElementById('rigBtn').style.display = 'none';
+        document.getElementById('rigLoading').style.display = 'block';
+
+        fetch('/upload', { method: 'POST', body: formData })
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('rigLoading').style.display = 'none';
+            document.getElementById('rigBtn').style.display = 'inline-block';
+            
+            if(data.error) { alert("Error parsing rig: " + data.error); return; }
+            
+            document.getElementById('rigPlaceholder').style.display = 'none';
+            const previewImg = document.getElementById('previewImg');
+            previewImg.src = data.preview_url + "?t=" + new Date().getTime(); 
+            previewImg.style.display = 'block';
+            
+            document.getElementById('rigStatus').innerText = `Successfully tracked ${data.joints_found} structural skeleton nodes!`;
+            
+            const dlBtn = document.getElementById('downloadJsonBtn');
+            dlBtn.href = data.rig_url;
+            dlBtn.style.display = 'inline-block';
+        })
+        .catch(err => {
+            document.getElementById('rigLoading').style.display = 'none';
+            document.getElementById('rigBtn').style.display = 'inline-block';
+            alert("Rigging network request failure.");
+            console.error(err);
+        });
+    }
+
+    // Pipeline Engine 2: LayerDiffusion Process Caller
+    function processLayerDiffusion() {
+        const file = fileInput.files[0];
+        if(!file) { alert("Please upload a character PNG file target first."); return; }
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        document.getElementById('layerBtn').style.display = 'none';
+        document.getElementById('layerLoading').style.display = 'block';
+
+        fetch('/generate-layers', { method: 'POST', body: formData })
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('layerLoading').style.display = 'none';
+            document.getElementById('layerBtn').style.display = 'inline-block';
+            
+            if(data.error) { alert("Error generating layer: " + data.error); return; }
+            
+            document.getElementById('layerPlaceholder').style.display = 'none';
+            const layerImg = document.getElementById('layerOutputImg');
+            layerImg.src = data.layer_url + "?t=" + new Date().getTime();
+            layerImg.style.display = 'block';
+            
+            document.getElementById('layerStatus').innerText = "Alpha layer alpha transparency separation complete.";
+            
+            const dlLayerBtn = document.getElementById('downloadLayerBtn');
+            dlLayerBtn.href = data.layer_url;
+            dlLayerBtn.style.display = 'inline-block';
+        })
+        .catch(err => {
+            document.getElementById('layerLoading').style.display = 'none';
+            document.getElementById('layerBtn').style.display = 'inline-block';
+            alert("Layer generation network execution failure.");
+            console.error(err);
+        });
+    }
+</script>
+
+</body>
+</html>

@@ -72,6 +72,15 @@ export const useProjectStore = create((set) => ({
     physics_groups: [],
     physicsRules: [],   // editable physics pendulum rules (PhysicsRule[])
     animations: [],
+    /*
+      Skin system:
+      skins:      { [skinId]: { [partNodeId]: textureUrl } }
+                  e.g. { front: { abc123: 'blob:...' }, side: { abc123: 'blob:...' } }
+      activeSkin: string | null
+                  null = use node own texture (legacy / no-skin mode)
+    */
+    skins: {},
+    activeSkin: null,
   },
 
   // Versions used to trigger rendering passes independently of React
@@ -323,6 +332,8 @@ export const useProjectStore = create((set) => ({
       state.project.physics_groups = [];
       state.project.physicsRules = [];
       state.project.animations = [];
+      state.project.skins = {};
+      state.project.activeSkin = null;
       state.versionControl.geometryVersion++;
       state.versionControl.transformVersion++;
       state.versionControl.textureVersion++;
@@ -368,6 +379,8 @@ export const useProjectStore = create((set) => ({
       state.project.parameters = parameters;
       state.project.physics_groups = projectData.physics_groups ?? [];
       state.project.physicsRules = projectData.physicsRules ?? [];
+      state.project.skins = projectData.skins ?? {};
+      state.project.activeSkin = projectData.activeSkin ?? null;
       state.versionControl.geometryVersion++;
       state.versionControl.transformVersion++;
       state.versionControl.textureVersion++;
@@ -505,4 +518,40 @@ export const useProjectStore = create((set) => ({
       draft.versionControl.geometryVersion++;
     });
   }),
+  // ── Skin actions ────────────────────────────────────────────────────────────
+
+  /** Register a texture URL for a part under a named skin. */
+  setSkinTexture: (skinId, partNodeId, textureUrl) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    if (!state.project.skins) state.project.skins = {};
+    if (!state.project.skins[skinId]) state.project.skins[skinId] = {};
+    state.project.skins[skinId][partNodeId] = textureUrl;
+    state.versionControl.textureVersion++;
+  })),
+
+  /** Switch which skin is active (null = use base textures). */
+  setActiveSkin: (skinId) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    state.project.activeSkin = skinId ?? null;
+    state.versionControl.textureVersion++;
+  })),
+
+  /** Delete a skin and all its texture registrations. */
+  deleteSkin: (skinId) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    if (state.project.skins) delete state.project.skins[skinId];
+    if (state.project.activeSkin === skinId) state.project.activeSkin = null;
+    state.versionControl.textureVersion++;
+  })),
+
+  /** Rename a skin (moves all its textures to the new key). */
+  renameSkin: (oldId, newId) => set(produce((state) => {
+    state.hasUnsavedChanges = true;
+    if (!state.project.skins || !state.project.skins[oldId]) return;
+    state.project.skins[newId] = state.project.skins[oldId];
+    delete state.project.skins[oldId];
+    if (state.project.activeSkin === oldId) state.project.activeSkin = newId;
+    state.versionControl.textureVersion++;
+  })),
+
 }));

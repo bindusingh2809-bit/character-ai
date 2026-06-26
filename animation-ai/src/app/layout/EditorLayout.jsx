@@ -15,6 +15,7 @@ import { AnimationListPanel } from '@/components/animation/AnimationListPanel';
 import { AIAnimationPanel } from '@/components/ai/AIAnimationPanel';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ArmaturePanel } from '@/components/armature/ArmaturePanel';
+import { SkinsPanel } from '@/components/skins/SkinsPanel';
 import { ParametersPanel } from '@/components/parameters/ParametersPanel';
 import { ExportModal } from '@/components/export/ExportModal';
 import { PreferencesModal } from '@/components/preferences/PreferencesModal';
@@ -62,6 +63,7 @@ export default function EditorLayout() {
    */
   const remeshRef = useRef(null);
   const deleteMeshRef = useRef(null);
+  const importSkinRef = useRef(null);
 
   const handleRemesh = useCallback((partId, opts) => {
     remeshRef.current?.(partId, opts);
@@ -84,6 +86,9 @@ export default function EditorLayout() {
   const canvas = useProjectStore(s => s.project.canvas);
   const updateCanvas = useProjectStore(s => s.updateCanvas);
   const nodes = useProjectStore(s => s.project.nodes);
+  const setActiveSkin = useProjectStore(s => s.setActiveSkin);
+  const deleteSkin    = useProjectStore(s => s.deleteSkin);
+  const renameSkin    = useProjectStore(s => s.renameSkin);
   const animations = useProjectStore(s => s.project.animations);
 
   const saveRef = useRef(null);
@@ -544,6 +549,7 @@ export default function EditorLayout() {
                 <CanvasViewport
                   remeshRef={remeshRef}
                   deleteMeshRef={deleteMeshRef}
+                  importSkinRef={importSkinRef}
                   saveRef={saveRef}
                   loadRef={loadRef}
                   resetRef={resetRef}
@@ -580,6 +586,13 @@ export default function EditorLayout() {
                     <div className="flex h-full flex-col border-l overflow-hidden">
                       <ParametersPanel />
                       <ArmaturePanel />
+                      <SkinsPanel
+                        project={project}
+                        setActiveSkin={setActiveSkin}
+                        deleteSkin={deleteSkin}
+                        renameSkin={renameSkin}
+                        onImportSkin={(file, skinId) => importSkinRef.current?.(file, skinId)}
+                      />
                       <div className="px-3 py-2 border-b shrink-0 flex items-center justify-between">
                         <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Inspector</h2>
                       </div>

@@ -8,7 +8,7 @@ import { useParameterStore } from '@/store/parameterStore';
 import { ScenePass } from '@/renderer/scenePass';
 import { importPsd } from '@/io/psd';
 import {
-  detectCharacterFormat, matchTag,
+  detectCharacterFormat, matchTag, buildArmatureNodes, analyzeGroups, estimateSkeletonFromBounds, boneForTag,
 } from '@/io/armatureOrganizer';
 import SkeletonOverlay from '@/components/canvas/SkeletonOverlay';
 import PsdImportWizard from '@/components/canvas/PsdImportWizard';
@@ -453,7 +453,8 @@ function computeSmartMeshOpts(imageBounds) {
 export default function CanvasViewport({
   remeshRef, deleteMeshRef,
   saveRef, loadRef, resetRef,
-  exportCaptureRef, thumbCaptureRef
+  exportCaptureRef, thumbCaptureRef,
+  importSkinRef,
 }) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
@@ -472,6 +473,8 @@ export default function CanvasViewport({
   const wizardStep = useEditorStore(s => s.wizardStep);
   const setWizardStep = useEditorStore(s => s.setWizardStep);
   const [wizardPsd, setWizardPsd] = useState(null);  // { psdW, psdH, layers, partIds }
+  const [pngRigPending, setPngRigPending] = useState(null);  // File awaiting rig-mode choice
+  const [pngRigLoading, setPngRigLoading] = useState(false);  // segmentation in-flight
   const [confirmWipeOpen, setConfirmWipeOpen] = useState(false);
   const [pendingFile, setPendingFile] = useState(null);
   const preImportSnapshotRef = useRef(null);  // project snapshot before finalizePsdImport
@@ -483,6 +486,10 @@ export default function CanvasViewport({
   const updateProject = useProjectStore(s => s.updateProject);
   const updateParameter = useProjectStore(s => s.updateParameter);
   const resetProject = useProjectStore(s => s.resetProject);
+  const setSkinTexture = useProjectStore(s => s.setSkinTexture);
+  const setActiveSkin  = useProjectStore(s => s.setActiveSkin);
+  const deleteSkin     = useProjectStore(s => s.deleteSkin);
+  const renameSkin     = useProjectStore(s => s.renameSkin);
   const editorState = useEditorStore();
   const setBrush = useEditorStore(s => s.setBrush);
   const setEditorMode = useEditorStore(s => s.setEditorMode);
@@ -1271,6 +1278,95 @@ export default function CanvasViewport({
     centerView(psdW, psdH);
   }, [updateProject, centerView]);
 
+  /* ── PNG auto-rig: segment + build bone hierarchy via backend ───────────── */
+  const importPngWithRig = useCallback(async (file, useLayerDiffusion = false) => {
+    setPngRigLoading(true);
+    try {
+      // 1. Read file as base64
+      const arrayBuffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+      const base64 = btoa(binary);
+
+      // 2. Call backend segmentation endpoint
+      const BACKEND_URL = import.meta.env?.VITE_AI_BACKEND_URL || 'http://localhost:8000';
+      const res = await fetch(`${BACKEND_URL}/api/segment-character`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_b64: base64, use_layer_diffusion: useLayerDiffusion }),
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(detail || `Backend returned ${res.status}`);
+      }
+      const data = await res.json();
+      // data: { layers, skeleton, canvas_width, canvas_height }
+
+      const psdW = data.canvas_width;
+      const psdH = data.canvas_height;
+
+      // 3. Convert backend layers to the format finalizePsdImport expects.
+      //    We synthesise an imageData-compatible structure from each RGBA sprite.
+      const partIds = data.layers.map(() => uid());
+      const layers = await Promise.all(data.layers.map(async (layer) => {
+        // Decode base64 sprite → ImageData
+        const spriteBuf = Uint8Array.from(atob(layer.image_b64), c => c.charCodeAt(0));
+        const spriteBlob = new Blob([spriteBuf], { type: 'image/png' });
+        const spriteBitmapUrl = URL.createObjectURL(spriteBlob);
+        const spriteImg = await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = reject;
+          img.src = spriteBitmapUrl;
+        });
+        const off = document.createElement('canvas');
+        off.width = layer.width; off.height = layer.height;
+        off.getContext('2d').drawImage(spriteImg, 0, 0);
+        const imageData = off.getContext('2d').getImageData(0, 0, layer.width, layer.height);
+
+        return {
+          // Fields finalizePsdImport reads
+          name:      layer.boneRole,
+          imageData,
+          x:         layer.x,
+          y:         layer.y,
+          width:     layer.width,
+          height:    layer.height,
+          opacity:   1,
+          visible:   true,
+          // Extra fields for analyzeGroups short-circuit
+          boneRole:  layer.boneRole,
+          pivotX:    layer.pivotX,
+          pivotY:    layer.pivotY,
+        };
+      }));
+
+      // 4. Build armature using the existing pipeline
+      //    analyzeGroups will detect .boneRole fields and take the short-circuit path.
+      //    buildArmatureNodes maps skeleton keypoints to pivot positions.
+      const groups = analyzeGroups(layers);
+      const { groupDefs, assignments } = buildArmatureNodes(
+        data.skeleton,
+        groups,
+        layers,
+        partIds,
+        uid,
+      );
+
+      // 5. Hand off to finalizePsdImport — identical to the PSD import path
+      finalizePsdImport(psdW, psdH, layers, partIds, groupDefs, assignments);
+
+    } catch (err) {
+      console.error('[importPngWithRig]', err);
+      alert(`Auto-rig failed: ${err.message}\n\nFalling back to flat import.`);
+      importPng(file);
+    } finally {
+      setPngRigLoading(false);
+      setPngRigPending(null);
+    }
+  }, [finalizePsdImport, importPng, updateProject]);
+
   /* ── Wizard: cancel import (called by PsdImportWizard) ─────────────────── */
   const handleWizardCancel = useCallback(() => {
     setWizardPsd(null);
@@ -1864,6 +1960,239 @@ export default function CanvasViewport({
     });
   }, [finalizePsdImport]);
 
+
+  /* ── Import a PSD as a skin (adds textures to existing rig) ─────────────── */
+  const importPsdAsSkin = useCallback(async (file, skinId) => {
+    if (!skinId?.trim()) return;
+
+    // 1. Parse PSD
+    let parsed;
+    try {
+      const buffer = await file.arrayBuffer();
+      parsed = importPsd(buffer);
+    } catch (err) {
+      console.error('[importPsdAsSkin] PSD parse error', err);
+      alert('Could not read PSD file: ' + err.message);
+      return;
+    }
+
+    const { width: psdW, height: psdH, layers } = parsed;
+    if (!layers.length) { alert('No layers found in PSD.'); return; }
+
+    const proj = projectRef.current;
+    if (!proj.nodes.length) {
+      alert('Import your front-facing character first, then use "Import as Skin".');
+      return;
+    }
+
+    // 2. Build boneRole → existing part node id map from the current rig.
+    const boneRoleToPartId = {};
+    for (const node of proj.nodes) {
+      if (node.type === 'group' && node.boneRole) {
+        const childPart = proj.nodes.find(n => n.parent === node.id && n.type === 'part');
+        if (childPart) boneRoleToPartId[node.boneRole] = childPart.id;
+      }
+    }
+
+    if (Object.keys(boneRoleToPartId).length === 0) {
+      alert('No rigged bones found on the current character.\n\nMake sure you imported the front-facing PSD through the wizard with "Auto-Rig" enabled.');
+      return;
+    }
+
+    // 3. Determine split state of the EXISTING rig (not the incoming PSD).
+    //    The incoming PSD may have merged layers (handwear, legwear) while
+    //    the rig uses split bones (leftArm/rightArm, leftLeg/rightLeg).
+    const rigHasSplitArms = !!(boneRoleToPartId.leftArm  || boneRoleToPartId.rightArm);
+    const rigHasSplitLegs = !!(boneRoleToPartId.leftLeg  || boneRoleToPartId.rightLeg);
+
+    // 4. Tag → list of boneRoles to apply the texture to.
+    //    When the incoming layer is merged but the rig is split, fan out to both sides.
+    //    When the incoming layer is already split, map 1:1.
+    function tagToBoneRoles(tag) {
+      // Head / face group
+      if (['face','front hair','back hair','headwear','nose','mouth',
+           'eyewhite','eyewhite-l','eyewhite-r','eyelash','eyelash-l','eyelash-r',
+           'eyebrow','eyebrow-l','eyebrow-r','eyewear','ears','ears-l','ears-r',
+           'earwear'].includes(tag)) return ['head'];
+      if (['neck','neckwear'].includes(tag)) return ['neck'];
+      if (['irides','irides-l','irides-r'].includes(tag)) return ['eyes'];
+      if (tag === 'topwear') return ['torso'];
+      if (tag === 'bottomwear') return ['root'];
+
+      // Arms — fan out merged → split when rig is split
+      if (tag === 'handwear-l') return ['leftArm'];
+      if (tag === 'handwear-r') return ['rightArm'];
+      if (tag === 'handwear')   return rigHasSplitArms ? ['leftArm','rightArm'] : ['bothArms'];
+
+      // Legs — same fan-out logic
+      if (tag === 'legwear-l' || tag === 'footwear-l') return ['leftLeg'];
+      if (tag === 'legwear-r' || tag === 'footwear-r') return ['rightLeg'];
+      if (tag === 'legwear'   || tag === 'footwear')   return rigHasSplitLegs ? ['leftLeg','rightLeg'] : ['bothLegs'];
+
+      return ['root'];
+    }
+
+    const scene = sceneRef.current;
+    let matched = 0;
+
+    for (let i = 0; i < layers.length; i++) {
+      const layer = layers[i];
+      const tag = matchTag(layer.name);
+      if (!tag) continue;
+
+      const targetBones = tagToBoneRoles(tag);
+
+      // Composite layer at full canvas size once
+      const off = document.createElement('canvas');
+      off.width = psdW; off.height = psdH;
+      const tmp = document.createElement('canvas');
+      tmp.width = layer.width; tmp.height = layer.height;
+      tmp.getContext('2d').putImageData(layer.imageData, 0, 0);
+      off.getContext('2d').drawImage(tmp, layer.x, layer.y);
+
+      for (const bone of targetBones) {
+        const existingPartId = boneRoleToPartId[bone];
+        if (!existingPartId) continue;
+
+        await new Promise((resolve) => {
+          off.toBlob((blob) => {
+            const url = URL.createObjectURL(blob);
+            setSkinTexture(skinId, existingPartId, url);
+            const img = new Image();
+            img.onload = () => {
+              if (scene) scene.parts.uploadSkinTexture(skinId, existingPartId, img);
+              resolve();
+            };
+            img.src = url;
+          }, 'image/png');
+        });
+
+        matched++;
+      }
+    }
+
+    if (matched === 0) {
+      alert(
+        'No layers could be matched to existing bones.\n\n' +
+        'Existing bones: ' + Object.keys(boneRoleToPartId).join(', ') + '\n\n' +
+        'Make sure the PSD layer names follow the standard convention ' +
+        '(face, topwear, handwear, legwear, etc.).'
+      );
+      return;
+    }
+
+    setActiveSkin(skinId);
+    isDirtyRef.current = true;
+  }, [setSkinTexture, setActiveSkin]);
+
+  /* ── Import a flat PNG as a skin via backend segmentation ───────────────── */
+  const importPngAsSkin = useCallback(async (file, skinId) => {
+    if (!skinId?.trim()) return;
+
+    const proj = projectRef.current;
+    if (!proj.nodes.length) {
+      alert('Import your front-facing character first, then use "Import as Skin".');
+      return;
+    }
+
+    // 1. Load the side PNG as an image element
+    const pngUrl = URL.createObjectURL(file);
+    const sideImg = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = pngUrl;
+    });
+
+    // 2. Get the canvas dimensions from the existing project
+    const canvasW = proj.canvas.width;
+    const canvasH = proj.canvas.height;
+
+    // Scale the side PNG to fit the canvas (same as how the front was imported)
+    // Center it horizontally, align to bottom
+    const scale = Math.min(canvasW / sideImg.width, canvasH / sideImg.height);
+    const scaledW = sideImg.width * scale;
+    const scaledH = sideImg.height * scale;
+    const offsetX = (canvasW - scaledW) / 2;
+    const offsetY = canvasH - scaledH;
+
+    // Draw the full side PNG onto a canvas-sized buffer
+    const fullCanvas = document.createElement('canvas');
+    fullCanvas.width = canvasW;
+    fullCanvas.height = canvasH;
+    const fullCtx = fullCanvas.getContext('2d');
+    fullCtx.drawImage(sideImg, offsetX, offsetY, scaledW, scaledH);
+
+    // 3. For every bone's part node, cut its imageBounds region from the side PNG
+    //    and upload as a skin texture — same size canvas so UVs stay identical.
+    const scene = sceneRef.current;
+    let matched = 0;
+
+    for (const node of proj.nodes) {
+      if (node.type !== 'group' || !node.boneRole) continue;
+      const partNode = proj.nodes.find(n => n.parent === node.id && n.type === 'part');
+      if (!partNode) continue;
+
+      const bounds = partNode.imageBounds;
+      if (!bounds) continue;
+
+      const { minX, minY, maxX, maxY } = bounds;
+      if (maxX <= minX || maxY <= minY) continue;
+
+      // Create a full-canvas texture with the side PNG content only in this bone's region
+      // Everything outside the region is transparent — matches front texture layout exactly
+      const boneCanvas = document.createElement('canvas');
+      boneCanvas.width = canvasW;
+      boneCanvas.height = canvasH;
+      const boneCtx = boneCanvas.getContext('2d');
+
+      // Clip to this bone's bounding box region
+      boneCtx.save();
+      boneCtx.beginPath();
+      boneCtx.rect(minX, minY, maxX - minX, maxY - minY);
+      boneCtx.clip();
+      boneCtx.drawImage(fullCanvas, 0, 0);
+      boneCtx.restore();
+
+      await new Promise((resolve) => {
+        boneCanvas.toBlob((blob) => {
+          const url = URL.createObjectURL(blob);
+          setSkinTexture(skinId, partNode.id, url);
+          const img = new Image();
+          img.onload = () => {
+            if (scene) scene.parts.uploadSkinTexture(skinId, partNode.id, img);
+            resolve();
+          };
+          img.src = url;
+        }, 'image/png');
+      });
+
+      matched++;
+    }
+
+    URL.revokeObjectURL(pngUrl);
+
+    if (matched === 0) {
+      alert('No bone regions found. Make sure the front character was imported with Auto-Rig.');
+      return;
+    }
+
+    setActiveSkin(skinId);
+    isDirtyRef.current = true;
+  }, [setSkinTexture, setActiveSkin]);
+
+
+  // Combined skin import handler — routes to PSD or PNG path based on file type
+  const importSkinFile = useCallback((file, skinId) => {
+    if (file.name.toLowerCase().endsWith('.psd')) {
+      return importPsdAsSkin(file, skinId);
+    } else if (file.type.startsWith('image/')) {
+      return importPngAsSkin(file, skinId);
+    }
+  }, [importPsdAsSkin, importPngAsSkin]);
+
+  useEffect(() => { if (importSkinRef) importSkinRef.current = importSkinFile; }, [importSkinRef, importSkinFile]);
+
   const importPsdFile = useCallback((file) => {
     const proj = projectRef.current;
     if (proj.nodes.length > 0) {
@@ -1911,9 +2240,10 @@ export default function CanvasViewport({
     } else if (file.name.toLowerCase().endsWith('.psd')) {
       importPsdFile(file);
     } else if (file.type.startsWith('image/')) {
-      importPng(file);
+      // Show the rig-mode choice modal instead of importing flat directly
+      setPngRigPending(file);
     }
-  }, [importPng, importPsdFile, importStretchFile]);
+  }, [importPsdFile, importStretchFile]);
 
   const onDragOver = useCallback((e) => { e.preventDefault(); }, []);
 
@@ -2398,12 +2728,13 @@ export default function CanvasViewport({
     } else if (file.name.toLowerCase().endsWith('.psd')) {
       importPsdFile(file);
     } else if (file.type.startsWith('image/')) {
-      importPng(file);
+      // Show the rig-mode choice modal
+      setPngRigPending(file);
     }
 
     // Clear input so same file can be uploaded again if needed
     e.target.value = '';
-  }, [importStretchFile, importPsdFile, importPng]);
+  }, [importStretchFile, importPsdFile]);
 
   /**
    * Reset the current project to empty state.
@@ -2706,6 +3037,43 @@ export default function CanvasViewport({
 
 
       {/* PSD import wizard — step-by-step rigging setup */}
+      {/* PNG import: rig-mode choice modal */}
+      <AlertDialog open={!!pngRigPending} onOpenChange={(open) => { if (!open && !pngRigLoading) setPngRigPending(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Import "{pngRigPending?.name}"</AlertDialogTitle>
+            <AlertDialogDescription>
+              How would you like to import this image?
+              <br /><br />
+              <strong>Auto-Rig</strong> — detects body parts with MediaPipe and segments
+              the character into separate limb sprites so animations like Wave, Walk, and
+              Jump work automatically.
+              <br /><br />
+              <strong>Flat Import</strong> — adds the image as a single layer with no
+              skeleton. You can rig it manually later.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+            <AlertDialogCancel disabled={pngRigLoading} onClick={() => setPngRigPending(null)}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={pngRigLoading}
+              className="bg-secondary text-secondary-foreground hover:bg-secondary/80"
+              onClick={() => { const f = pngRigPending; setPngRigPending(null); importPng(f); }}
+            >
+              Flat Import
+            </AlertDialogAction>
+            <AlertDialogAction
+              disabled={pngRigLoading}
+              onClick={() => importPngWithRig(pngRigPending, false)}
+            >
+              {pngRigLoading ? 'Analysing…' : 'Auto-Rig (GrabCut)'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {wizardStep && wizardPsd && (
         <PsdImportWizard
           step={wizardStep}

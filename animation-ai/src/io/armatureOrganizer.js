@@ -103,6 +103,28 @@ export function detectCharacterFormat(layers) {
  * @param {Object} layerMap  normalized-name → layer
  */
 export function analyzeGroups(layerMap) {
+  // ── PNG auto-rig path: layers carry explicit boneRole tags ───────────────
+  // When importPngWithRig() feeds synthesised layers, each layer has a
+  // .boneRole property set directly by the backend segmentation response.
+  // In that case layerMap is actually the layer array, so we check for it
+  // and derive the group structure without any name-pattern matching.
+  if (Array.isArray(layerMap) && layerMap.length > 0 && layerMap[0]?.boneRole) {
+    const hasRole = (r) => layerMap.some((l) => l.boneRole === r);
+    return {
+      head:  hasRole('head'),
+      torso: hasRole('torso'),
+      hips:  false,
+      arms:  (hasRole('leftArm') && hasRole('rightArm')) ? 'split'
+           : (hasRole('leftArm') || hasRole('rightArm')) ? 'partial'
+           : 'missing',
+      legs:  (hasRole('leftLeg') && hasRole('rightLeg')) ? 'split'
+           : (hasRole('leftLeg') || hasRole('rightLeg')) ? 'partial'
+           : 'missing',
+      feet:  'missing',
+    };
+  }
+
+  // ── PSD path: derive structure from layer name tags (original logic) ──────
   const has = (n) => !!layerMap[n];
   function splitState(base) {
     const l = has(base + '-l'), r = has(base + '-r');
@@ -244,17 +266,47 @@ const DWPOSE_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5/pose_landma
 // The actual DWPose model — whole-body 133-point, 288×384 input
 export const DWPOSE_URL = 'https://huggingface.co/yzd-v/DWPose/resolve/main/dw-ll_ucoco_384.onnx';
 
+/**
+ * Path at which the model is served from your own server.
+ * Drop the .onnx file into  animation-ai/public/models/
+ * and it will be available at this URL with zero extra config.
+ * Vite serves everything in public/ at the site root.
+ */
+export const SERVER_MODEL_PATH = '/models/dw-ll_ucoco_384.onnx';
+
+/**
+ * Check whether the model file exists on the server without downloading it.
+ * Returns true if the server responds with a non-404 status.
+ */
+export async function checkServerModelAvailable() {
+  try {
+    const res = await fetch(SERVER_MODEL_PATH, { method: 'HEAD' });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** Cache the session across imports so we only download / compile once. */
 let _cachedSession = null;
 
 /**
- * Load the ONNX session from a URL or ArrayBuffer.
- * Reuses the cached session if already loaded.
+ * Load the ONNX session from:
+ *   - 'server'      → fetch from SERVER_MODEL_PATH (model pre-placed in public/models/)
+ *   - a URL string  → fetch from that URL (e.g. DWPOSE_URL for HuggingFace)
+ *   - ArrayBuffer   → use the bytes directly (user-uploaded file)
+ * Reuses the cached session if already loaded from a previous call.
  */
 export async function loadDWPoseSession(payload) {
   const ort = await _ensureOrt();
   if (_cachedSession) return _cachedSession;
-  _cachedSession = await ort.InferenceSession.create(payload, {
+
+  let source = payload;
+  if (payload === 'server') {
+    source = SERVER_MODEL_PATH;
+  }
+
+  _cachedSession = await ort.InferenceSession.create(source, {
     executionProviders: ['wasm'],
   });
   return _cachedSession;
@@ -433,7 +485,7 @@ function applyDWPoseKeypoints(kps, psdW, psdH) {
  * Returns a bone name string. Bones that don't exist for a given groups config
  * fall back to 'root'.
  */
-function boneForTag(tag, groups) {
+export function boneForTag(tag, groups) {
   if (IRIS_TAGS.has(tag))                             return 'eyes';
   if (NECK_TAGS.has(tag))                             return 'neck';
   if (HEAD_TAGS.has(tag))                             return 'head';

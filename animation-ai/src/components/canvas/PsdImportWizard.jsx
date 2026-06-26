@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, AlertTriangle, CheckCircle, Circle, Scissors
 import {
   loadDWPoseSession, runDWPose, buildArmatureNodes, analyzeGroups,
   matchTag, estimateSkeletonFromBounds, DWPOSE_URL, clearDWPoseSession,
+  checkServerModelAvailable, SERVER_MODEL_PATH,
   KNOWN_TAGS, autoRearrangeLayers,
 } from '../../io/armatureOrganizer';
 import { splitLayerLR } from '../../io/splitLR';
@@ -56,6 +57,12 @@ export default function PsdImportWizard({
   const [splitError, setSplitError] = useState('');
   const [meshAllParts, setMeshAllParts] = useState(true);
   const [performSplit, setPerformSplit] = useState(true);
+  const [serverModelAvailable, setServerModelAvailable] = useState(null); // null=checking, true/false
+
+  /* ── Probe server for pre-placed model on mount ── */
+  useEffect(() => {
+    checkServerModelAvailable().then(setServerModelAvailable);
+  }, []);
 
   const { psdW, psdH, layers, partIds } = pendingPsd || {};
 
@@ -441,76 +448,139 @@ export default function PsdImportWizard({
   /* ── Step: DWPose loading ─────────────────────────────────────────── */
   if (step === 'dwpose') {
     const modelLoaded = !!onnxSessionRef?.current;
+    const serverChecking = serverModelAvailable === null;
+
     return (
       <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70">
         <div className="bg-popover border border-border rounded-lg shadow-2xl p-6 max-w-sm w-full mx-4 flex flex-col gap-4">
+
+          {/* Header */}
           <div>
             <h3 className="text-sm font-semibold text-foreground mb-1">Load DWPose model</h3>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Download or upload the ~50 MB DWPose ONNX model for high-accuracy pose detection.
+              High-accuracy 133-point pose detection (~50 MB ONNX model).
             </p>
           </div>
 
           {/* Model status */}
           <div className="p-2 rounded bg-muted border border-border">
             <p className="text-xs text-muted-foreground">
-              Status: {modelLoaded ? (
-                <span className="text-green-500 font-medium">Loaded ✓</span>
-              ) : (
-                <span className="text-amber-500">Not loaded</span>
-              )}
+              Status:{' '}
+              {modelLoaded
+                ? <span className="text-green-500 font-medium">Loaded ✓</span>
+                : <span className="text-amber-500">Not loaded</span>
+              }
             </p>
           </div>
 
-          {/* Load buttons */}
-          <div className="flex flex-col gap-2">
-            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Load Model</div>
-            <div className="flex gap-2">
-              {/* Local .onnx file */}
-              <label className={[
-                'flex-1 text-center px-3 py-1.5 text-xs rounded border cursor-pointer transition-colors',
-                rigLoading
-                  ? 'opacity-40 pointer-events-none border-border text-muted-foreground'
-                  : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted',
-              ].join(' ')}>
-                Load .onnx file
-                <input
-                  type="file" accept=".onnx" className="hidden"
-                  onChange={async (e) => {
-                    const f = e.target.files?.[0];
-                    if (!f) return;
-                    runArmatureRig(await f.arrayBuffer());
-                  }}
-                  disabled={rigLoading}
-                />
-              </label>
-
-              {/* Download from HuggingFace */}
-              <button
-                disabled={rigLoading}
-                className="flex-1 px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium disabled:opacity-40"
-                onClick={() => runArmatureRig(DWPOSE_URL)}
-              >
-                {rigLoading ? 'Working…' : 'Download'}
-              </button>
+          {/* ── Option 1: Load from server (primary) ── */}
+          <div className="flex flex-col gap-1.5">
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">
+              From server <span className="normal-case">(recommended)</span>
             </div>
-
-            {/* Status */}
-            {rigStatus && (
-              <p className={[
-                'text-[11px] px-1',
-                rigStatus.startsWith('Error') ? 'text-red-400' : 'text-muted-foreground',
-              ].join(' ')}>
-                {rigStatus}
+            <button
+              disabled={rigLoading || serverChecking || serverModelAvailable === false}
+              className="w-full px-3 py-2 text-xs rounded bg-primary text-primary-foreground
+                         hover:bg-primary/90 transition-colors font-medium disabled:opacity-40
+                         flex items-center justify-center gap-2"
+              onClick={() => runArmatureRig('server')}
+              title={
+                serverModelAvailable === false
+                  ? `Model not found. Place dw-ll_ucoco_384.onnx in public/models/`
+                  : `Load from ${SERVER_MODEL_PATH}`
+              }
+            >
+              {serverChecking
+                ? '⏳ Checking server…'
+                : serverModelAvailable
+                  ? (rigLoading ? 'Loading…' : '⚡ Load from server')
+                  : '✗ Not on server'
+              }
+            </button>
+            {serverModelAvailable === false && !serverChecking && (
+              <p className="text-[11px] text-amber-400 px-0.5 leading-relaxed">
+                Place <code className="bg-muted px-1 rounded">dw-ll_ucoco_384.onnx</code> in{' '}
+                <code className="bg-muted px-1 rounded">public/models/</code> on the server
+                to enable instant loading with no download.
+              </p>
+            )}
+            {serverModelAvailable && !serverChecking && (
+              <p className="text-[11px] text-green-500 px-0.5">
+                ✓ Model found on server — no download needed.
               </p>
             )}
           </div>
+
+          {/* Divider */}
+          <div className="flex items-center gap-2">
+            <div className="flex-1 h-px bg-border" />
+            <span className="text-[10px] text-muted-foreground uppercase tracking-wide">or</span>
+            <div className="flex-1 h-px bg-border" />
+          </div>
+
+          {/* ── Option 2: Upload custom model ── */}
+          <div className="flex flex-col gap-1.5">
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">
+              Upload custom model
+            </div>
+            <label className={[
+              'w-full text-center px-3 py-2 text-xs rounded border cursor-pointer transition-colors',
+              rigLoading
+                ? 'opacity-40 pointer-events-none border-border text-muted-foreground'
+                : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted',
+            ].join(' ')}>
+              📁 Choose .onnx file…
+              <input
+                type="file" accept=".onnx" className="hidden"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  runArmatureRig(await f.arrayBuffer());
+                }}
+                disabled={rigLoading}
+              />
+            </label>
+            <p className="text-[11px] text-muted-foreground px-0.5">
+              Any DWPose-compatible ONNX model. Useful if you have a fine-tuned or
+              different resolution variant.
+            </p>
+          </div>
+
+          {/* ── Option 3: Download from HuggingFace ── */}
+          <div className="flex flex-col gap-1.5">
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">
+              Download from HuggingFace
+            </div>
+            <button
+              disabled={rigLoading}
+              className="w-full px-3 py-2 text-xs rounded border border-border
+                         text-muted-foreground hover:text-foreground hover:bg-muted
+                         transition-colors disabled:opacity-40"
+              onClick={() => runArmatureRig(DWPOSE_URL)}
+            >
+              {rigLoading ? 'Working…' : '⬇ Download (~50 MB)'}
+            </button>
+            <p className="text-[11px] text-muted-foreground px-0.5">
+              Downloads directly from HuggingFace. Slow on first use; cached in-session after.
+            </p>
+          </div>
+
+          {/* Status message */}
+          {rigStatus && (
+            <p className={[
+              'text-[11px] px-1 py-1 rounded bg-muted border border-border',
+              rigStatus.startsWith('Error') ? 'text-red-400' : 'text-muted-foreground',
+            ].join(' ')}>
+              {rigStatus}
+            </p>
+          )}
 
           {/* Footer */}
           <div className="flex justify-between border-t border-border pt-3">
             <button
               disabled={rigLoading}
-              className="px-3 py-1.5 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40"
+              className="px-3 py-1.5 text-xs rounded border border-border text-muted-foreground
+                         hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40"
               onClick={() => onSetStep('adjust')}
             >
               ← Back

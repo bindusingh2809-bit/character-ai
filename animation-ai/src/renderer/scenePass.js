@@ -5,7 +5,7 @@
  * - Sorts parts by draw_order
  * - Builds camera MVP from view (zoom/pan)
  * - Multiplies camera MVP × world matrix for each part
- * - Issues draw calls via PartRenderer
+ * - Issues draw calls via PartRenderero
  * - Respects editor.overlays and node.visible
  */
 import { createProgram } from './program.js';
@@ -192,12 +192,26 @@ export class ScenePass {
           ? baseOpacity * 0.5
           : baseOpacity;
 
-        this.partRenderer.drawPart(
-          part.id,
-          partMvp,
-          effectiveOpacity,
-          uMvp, uTexture, uOpacity
-        );
+        // Skin override: if activeSkin is set, use that skin's texture if available
+        const activeSkin = project.activeSkin ?? null;
+        const skinTex = activeSkin
+          ? this.partRenderer.getSkinTexture(activeSkin, part.id)
+          : null;
+
+        if (skinTex) {
+          this.partRenderer.drawPartWithTexture(
+            part.id, skinTex,
+            partMvp, effectiveOpacity,
+            uMvp, uTexture, uOpacity
+          );
+        } else {
+          this.partRenderer.drawPart(
+            part.id,
+            partMvp,
+            effectiveOpacity,
+            uMvp, uTexture, uOpacity
+          );
+        }
       }
       gl.disable(gl.STENCIL_TEST);
     }

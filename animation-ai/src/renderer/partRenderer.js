@@ -23,6 +23,8 @@ export class PartRenderer {
     this.wireProgram = wireProgram;
     /** @type {Map<string, PartGPUState>} */
     this._parts = new Map();
+    // skinTextures: Map< 'skinId:partId', WebGLTexture >
+    this._skinTextures = new Map();
   }
 
   hasTexture(partId) { return !!this._parts.get(partId)?.texture; }
@@ -221,6 +223,64 @@ export class PartRenderer {
    * @param {WebGLUniformLocation} uMvp
    * @param {WebGLUniformLocation} uColor
    */
+
+
+  /** Upload a texture for a specific skin + part combination. */
+  uploadSkinTexture(skinId, partId, source) {
+    const key = skinId + ':' + partId;
+    const { gl } = this;
+    const existing = this._skinTextures.get(key);
+    if (existing) gl.deleteTexture(existing);
+
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    this._skinTextures.set(key, tex);
+  }
+
+  /** Get a previously uploaded skin texture (or null). */
+  getSkinTexture(skinId, partId) {
+    return this._skinTextures.get(skinId + ':' + partId) ?? null;
+  }
+
+  /** Destroy all textures for a given skinId. */
+  destroySkin(skinId) {
+    const prefix = skinId + ':';
+    for (const [key, tex] of this._skinTextures) {
+      if (key.startsWith(prefix)) {
+        this.gl.deleteTexture(tex);
+        this._skinTextures.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Draw one part using an alternate texture (for skin overrides).
+   * The VAO/mesh comes from partId, but the texture is supplied directly.
+   */
+  drawPartWithTexture(partId, altTexture, mvp, opacity, uMvp, uTexture, uOpacity) {
+    const { gl } = this;
+    const state = this._parts.get(partId);
+    if (!state || !state.vao || state.indexCount === 0) return;
+
+    gl.uniformMatrix3fv(uMvp, false, mvp);
+    gl.uniform1f(uOpacity, opacity);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, altTexture);
+    gl.uniform1i(uTexture, 0);
+
+    gl.bindVertexArray(state.vao);
+    gl.drawElements(gl.TRIANGLES, state.indexCount, gl.UNSIGNED_SHORT, 0);
+    gl.bindVertexArray(null);
+  }
+
   drawWireframe(partId, mvp, uMvp, uColor) {
     const { gl } = this;
     const state = this._parts.get(partId);
@@ -301,5 +361,7 @@ export class PartRenderer {
 
   destroyAll() {
     for (const id of this._parts.keys()) this.destroyPart(id);
+    for (const tex of this._skinTextures.values()) this.gl.deleteTexture(tex);
+    this._skinTextures.clear();
   }
 }

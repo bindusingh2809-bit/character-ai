@@ -1,0 +1,9 @@
+{
+    "source_image": "char2.png",
+    "resolution": {
+        "width": 500,
+        "height": 500
+    },
+    "total_joints": 0,
+    "keypoints": []
+}
