@@ -99,7 +99,7 @@ export function createIdleMotion(boneMap, calibration, opts = {}) {
 // `opts.side` is reused as the travel direction ('right' = walks toward
 // screen-right, the default; 'left' = walks toward screen-left) — no new
 // schema field needed, since the LLM/UI already produce `side`.
-function gaitMotion(boneMap, calibration, opts, { stepDeg, bobAmount, cycleMs, liftDeg, turnDeg, travelPxPerCycle }) {
+function gaitMotion(boneMap, calibration, opts, { stepDeg, bobAmount, cycleMs, liftDeg, turnDeg, travelPxPerCycle, kneeBendDeg, elbowBendDeg }) {
   // If the caller asked for a specific number of strides (opts.count), this
   // is a one-shot clip meant to net-displace the character — e.g. "walk 3
   // steps". Otherwise (no count given) this motion may be played in a
@@ -190,6 +190,42 @@ function gaitMotion(boneMap, calibration, opts, { stepDeg, bobAmount, cycleMs, l
       ], cycleMs, cycles,
     ), EASE.EASE_BOTH));
   }
+  // ── 3b. KNEE BEND — the lower leg is a CHILD bone of leftLeg/rightLeg,
+  // so its rotation here is RELATIVE to the thigh, not absolute. A real
+  // walking knee is nearly straight at both footfalls (heel-strike and
+  // toe-off) and flexes hardest during the SWING half of that same leg's
+  // own cycle, so the shin/foot clears the ground instead of dragging
+  // through it in a straight line. Each knee's bend peak is placed at
+  // exactly the timestamp where that leg's own track already dips to
+  // `-liftDeg` (its swing-through moment) — left swings at 0.25, right at
+  // 0.75, matching the phase offset already established above — plus a
+  // much smaller secondary flex during stance/push-off so the leg isn't
+  // robotically locked the rest of the cycle either.
+  const kneeBend = kneeBendDeg ?? liftDeg * 2.2;
+  if (boneMap.leftKnee) {
+    tracks.push(track(boneMap.leftKnee, 'rotation', repeatCycle(
+      [
+        [0, 0],                       // contact (leg back) — straight
+        [cycleMs * 0.25, kneeBend],   // swing-through — max bend to clear ground
+        [cycleMs * 0.5, 0],           // contact (leg forward) — straight
+        [cycleMs * 0.75, kneeBend * 0.15], // stance/push-off — slight flex
+        [cycleMs, 0],
+      ], cycleMs, cycles,
+    ), EASE.EASE_BOTH));
+  }
+  if (boneMap.rightKnee) {
+    // Same shape, offset half a cycle to match rightLeg's own swing (0.75).
+    tracks.push(track(boneMap.rightKnee, 'rotation', repeatCycle(
+      [
+        [0, 0],
+        [cycleMs * 0.25, kneeBend * 0.15],
+        [cycleMs * 0.5, 0],
+        [cycleMs * 0.75, kneeBend],
+        [cycleMs, 0],
+      ], cycleMs, cycles,
+    ), EASE.EASE_BOTH));
+  }
+
   // Arms swing opposite their same-side leg (natural counter-swing).
   if (boneMap.leftArm) {
     tracks.push(track(boneMap.leftArm, 'rotation', repeatCycle(
@@ -201,6 +237,28 @@ function gaitMotion(boneMap, calibration, opts, { stepDeg, bobAmount, cycleMs, l
       [[0, -stepDeg * 0.5], [cycleMs / 2, stepDeg * 0.5], [cycleMs, -stepDeg * 0.5]], cycleMs, cycles,
     ), EASE.EASE_BOTH));
   }
+
+  // ── 3c. ELBOW BEND — same idea as the knee: the forearm is a CHILD of
+  // leftArm/rightArm, so this rotation is relative to the upper arm, not
+  // absolute. A swinging arm flexes slightly at the elbow as it comes
+  // forward (so the hand doesn't overshoot ahead of the body on too long
+  // an "arc") and straightens as it swings back. leftArm's forward extreme
+  // is its t=0/cycle value (+stepDeg*0.5); rightArm's forward extreme is at
+  // cycleMs/2 (+stepDeg*0.5) — i.e. each elbow bends most exactly when its
+  // own arm track is at its positive (forward) peak, and straightens at the
+  // negative (back) peak, the same phase relationship a real arm swing has.
+  const elbowBend = elbowBendDeg ?? stepDeg * 0.5;
+  if (boneMap.leftElbow) {
+    tracks.push(track(boneMap.leftElbow, 'rotation', repeatCycle(
+      [[0, elbowBend], [cycleMs / 2, 0], [cycleMs, elbowBend]], cycleMs, cycles,
+    ), EASE.EASE_BOTH));
+  }
+  if (boneMap.rightElbow) {
+    tracks.push(track(boneMap.rightElbow, 'rotation', repeatCycle(
+      [[0, 0], [cycleMs / 2, elbowBend], [cycleMs, 0]], cycleMs, cycles,
+    ), EASE.EASE_BOTH));
+  }
+
   // Body/head bob — two bounces per cycle (one per footfall), in addition
   // to the turn rotation tracks above (different property, so they layer).
   if (boneMap.body) {
@@ -221,12 +279,14 @@ function gaitMotion(boneMap, calibration, opts, { stepDeg, bobAmount, cycleMs, l
 export function createWalkMotion(boneMap, calibration, opts = {}) {
   return gaitMotion(boneMap, calibration, opts, {
     stepDeg: 18, bobAmount: 4, cycleMs: 600, liftDeg: 10, turnDeg: 8, travelPxPerCycle: 40,
+    kneeBendDeg: 28, elbowBendDeg: 12,
   });
 }
 
 export function createRunMotion(boneMap, calibration, opts = {}) {
   return gaitMotion(boneMap, calibration, opts, {
     stepDeg: 32, bobAmount: 8, cycleMs: 360, liftDeg: 22, turnDeg: 12, travelPxPerCycle: 70,
+    kneeBendDeg: 55, elbowBendDeg: 24,
   });
 }
 

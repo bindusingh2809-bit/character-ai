@@ -236,11 +236,16 @@ export class PartRenderer {
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    // NOTE: no mipmaps here on purpose. Skin textures are full-canvas-sized
+    // composites uploaded once per bone (often 15-20+ in a row for one skin
+    // import). generateMipmap() on each of those is slow and adds ~33% extra
+    // GPU memory per texture — multiplied across every bone, that was enough
+    // to exhaust GPU memory and lose the WebGL context mid-import. Plain
+    // LINEAR filtering is sufficient since these aren't minified aggressively.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.generateMipmap(gl.TEXTURE_2D);
     this._skinTextures.set(key, tex);
   }
 

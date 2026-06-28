@@ -626,6 +626,26 @@ export default function CanvasViewport({
       return;
     }
 
+    // Surface context loss loudly instead of silently leaving a dead canvas.
+    // This is the failure mode that shows only the (SVG) skeleton overlay,
+    // since the overlay doesn't depend on the GL context — usually caused by
+    // GPU memory exhaustion from uploading too many large textures in a row.
+    const handleContextLost = (e) => {
+      e.preventDefault();
+      console.error('[CanvasViewport] WebGL context lost — likely GPU memory exhaustion from texture uploads.');
+      alert(
+        'Rendering stopped unexpectedly (GPU context lost), likely from running out of graphics memory ' +
+        'during the last operation. The skeleton may still be visible but the character image will not ' +
+        'render until the page is reloaded.\n\nTry reloading the page, and if this happens again, try ' +
+        'splitting large imports into smaller PSDs.'
+      );
+    };
+    const handleContextRestored = () => {
+      console.warn('[CanvasViewport] WebGL context restored — a reload is still recommended to fully recover GPU resources.');
+    };
+    canvas.addEventListener('webglcontextlost', handleContextLost, false);
+    canvas.addEventListener('webglcontextrestored', handleContextRestored, false);
+
     const tick = (timestamp) => {
       // Advance animation playback and mark dirty if time moved
       const moved = animRef.current.tick(timestamp);
@@ -814,6 +834,8 @@ export default function CanvasViewport({
 
     return () => {
       cancelAnimationFrame(rafRef.current);
+      canvas.removeEventListener('webglcontextlost', handleContextLost, false);
+      canvas.removeEventListener('webglcontextrestored', handleContextRestored, false);
       sceneRef.current?.destroy();
       sceneRef.current = null;
     };
@@ -1961,6 +1983,27 @@ export default function CanvasViewport({
   }, [finalizePsdImport]);
 
 
+  /**
+   * Recursively collect every descendant 'part' node under parentId, descending
+   * through any number of intermediate 'group' / 'warpDeformer' wrapper nodes.
+   * Auto-rigging (Setup Parameters) can insert warpDeformer wrappers between a
+   * boneRole group and its part(s) — e.g. group(head) -> warpDeformer -> part —
+   * so a direct-child-only lookup misses anything that got warp-wrapped. This
+   * walks arbitrarily deep and returns ALL matching parts (a bone can end up
+   * with more than one, e.g. a split layer wrapped together under one warp).
+   */
+  const collectDescendantParts = useCallback((proj, parentId, out = []) => {
+    for (const n of proj.nodes) {
+      if (n.parent !== parentId) continue;
+      if (n.type === 'part') {
+        out.push(n);
+      } else if (n.type === 'group' || n.type === 'warpDeformer') {
+        collectDescendantParts(proj, n.id, out);
+      }
+    }
+    return out;
+  }, []);
+
   /* ── Import a PSD as a skin (adds textures to existing rig) ─────────────── */
   const importPsdAsSkin = useCallback(async (file, skinId) => {
     if (!skinId?.trim()) return;
@@ -1985,16 +2028,20 @@ export default function CanvasViewport({
       return;
     }
 
-    // 2. Build boneRole → existing part node id map from the current rig.
-    const boneRoleToPartId = {};
+    // 2. Build boneRole → existing part node id[] map from the current rig.
+    //    Walks through any warpDeformer/group nesting introduced by auto-rigging,
+    //    so this stays correct regardless of how many levels of wrapping exist.
+    const boneRoleToPartIds = {};
     for (const node of proj.nodes) {
       if (node.type === 'group' && node.boneRole) {
-        const childPart = proj.nodes.find(n => n.parent === node.id && n.type === 'part');
-        if (childPart) boneRoleToPartId[node.boneRole] = childPart.id;
+        const parts = collectDescendantParts(proj, node.id);
+        if (parts.length) {
+          boneRoleToPartIds[node.boneRole] = parts.map(p => p.id);
+        }
       }
     }
 
-    if (Object.keys(boneRoleToPartId).length === 0) {
+    if (Object.keys(boneRoleToPartIds).length === 0) {
       alert('No rigged bones found on the current character.\n\nMake sure you imported the front-facing PSD through the wizard with "Auto-Rig" enabled.');
       return;
     }
@@ -2002,8 +2049,8 @@ export default function CanvasViewport({
     // 3. Determine split state of the EXISTING rig (not the incoming PSD).
     //    The incoming PSD may have merged layers (handwear, legwear) while
     //    the rig uses split bones (leftArm/rightArm, leftLeg/rightLeg).
-    const rigHasSplitArms = !!(boneRoleToPartId.leftArm  || boneRoleToPartId.rightArm);
-    const rigHasSplitLegs = !!(boneRoleToPartId.leftLeg  || boneRoleToPartId.rightLeg);
+    const rigHasSplitArms = !!(boneRoleToPartIds.leftArm  || boneRoleToPartIds.rightArm);
+    const rigHasSplitLegs = !!(boneRoleToPartIds.leftLeg  || boneRoleToPartIds.rightLeg);
 
     // 4. Tag → list of boneRoles to apply the texture to.
     //    When the incoming layer is merged but the rig is split, fan out to both sides.
@@ -2051,30 +2098,32 @@ export default function CanvasViewport({
       off.getContext('2d').drawImage(tmp, layer.x, layer.y);
 
       for (const bone of targetBones) {
-        const existingPartId = boneRoleToPartId[bone];
-        if (!existingPartId) continue;
+        const partIds = boneRoleToPartIds[bone];
+        if (!partIds || !partIds.length) continue;
 
-        await new Promise((resolve) => {
-          off.toBlob((blob) => {
-            const url = URL.createObjectURL(blob);
-            setSkinTexture(skinId, existingPartId, url);
-            const img = new Image();
-            img.onload = () => {
-              if (scene) scene.parts.uploadSkinTexture(skinId, existingPartId, img);
-              resolve();
-            };
-            img.src = url;
-          }, 'image/png');
-        });
+        for (const existingPartId of partIds) {
+          await new Promise((resolve) => {
+            off.toBlob((blob) => {
+              const url = URL.createObjectURL(blob);
+              setSkinTexture(skinId, existingPartId, url);
+              const img = new Image();
+              img.onload = () => {
+                if (scene) scene.parts.uploadSkinTexture(skinId, existingPartId, img);
+                resolve();
+              };
+              img.src = url;
+            }, 'image/png');
+          });
 
-        matched++;
+          matched++;
+        }
       }
     }
 
     if (matched === 0) {
       alert(
         'No layers could be matched to existing bones.\n\n' +
-        'Existing bones: ' + Object.keys(boneRoleToPartId).join(', ') + '\n\n' +
+        'Existing bones: ' + Object.keys(boneRoleToPartIds).join(', ') + '\n\n' +
         'Make sure the PSD layer names follow the standard convention ' +
         '(face, topwear, handwear, legwear, etc.).'
       );
@@ -2130,44 +2179,46 @@ export default function CanvasViewport({
 
     for (const node of proj.nodes) {
       if (node.type !== 'group' || !node.boneRole) continue;
-      const partNode = proj.nodes.find(n => n.parent === node.id && n.type === 'part');
-      if (!partNode) continue;
+      const partNodes = collectDescendantParts(proj, node.id);
+      if (!partNodes.length) continue;
 
-      const bounds = partNode.imageBounds;
-      if (!bounds) continue;
+      for (const partNode of partNodes) {
+        const bounds = partNode.imageBounds;
+        if (!bounds) continue;
 
-      const { minX, minY, maxX, maxY } = bounds;
-      if (maxX <= minX || maxY <= minY) continue;
+        const { minX, minY, maxX, maxY } = bounds;
+        if (maxX <= minX || maxY <= minY) continue;
 
-      // Create a full-canvas texture with the side PNG content only in this bone's region
-      // Everything outside the region is transparent — matches front texture layout exactly
-      const boneCanvas = document.createElement('canvas');
-      boneCanvas.width = canvasW;
-      boneCanvas.height = canvasH;
-      const boneCtx = boneCanvas.getContext('2d');
+        // Create a full-canvas texture with the side PNG content only in this bone's region
+        // Everything outside the region is transparent — matches front texture layout exactly
+        const boneCanvas = document.createElement('canvas');
+        boneCanvas.width = canvasW;
+        boneCanvas.height = canvasH;
+        const boneCtx = boneCanvas.getContext('2d');
 
-      // Clip to this bone's bounding box region
-      boneCtx.save();
-      boneCtx.beginPath();
-      boneCtx.rect(minX, minY, maxX - minX, maxY - minY);
-      boneCtx.clip();
-      boneCtx.drawImage(fullCanvas, 0, 0);
-      boneCtx.restore();
+        // Clip to this bone's bounding box region
+        boneCtx.save();
+        boneCtx.beginPath();
+        boneCtx.rect(minX, minY, maxX - minX, maxY - minY);
+        boneCtx.clip();
+        boneCtx.drawImage(fullCanvas, 0, 0);
+        boneCtx.restore();
 
-      await new Promise((resolve) => {
-        boneCanvas.toBlob((blob) => {
-          const url = URL.createObjectURL(blob);
-          setSkinTexture(skinId, partNode.id, url);
-          const img = new Image();
-          img.onload = () => {
-            if (scene) scene.parts.uploadSkinTexture(skinId, partNode.id, img);
-            resolve();
-          };
-          img.src = url;
-        }, 'image/png');
-      });
+        await new Promise((resolve) => {
+          boneCanvas.toBlob((blob) => {
+            const url = URL.createObjectURL(blob);
+            setSkinTexture(skinId, partNode.id, url);
+            const img = new Image();
+            img.onload = () => {
+              if (scene) scene.parts.uploadSkinTexture(skinId, partNode.id, img);
+              resolve();
+            };
+            img.src = url;
+          }, 'image/png');
+        });
 
-      matched++;
+        matched++;
+      }
     }
 
     URL.revokeObjectURL(pngUrl);
