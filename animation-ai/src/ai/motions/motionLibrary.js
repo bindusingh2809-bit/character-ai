@@ -72,49 +72,41 @@ export function createIdleMotion(boneMap, calibration, opts = {}) {
 // ── Walk / Run ───────────────────────────────────────────────────────────
 // Principles: Arcs (limbs swing through curved paths, approximated here by
 // opposite-phase rotation pairs), Timing (run = faster cycle, more bob),
-// Exaggeration (run's bigger step angle and bob amount), Staging (the
-// character visibly commits to a travel direction instead of facing the
-// camera while its legs scissor in place).
+// Exaggeration (run's bigger step angle and bob amount).
 //
-// FIX: the previous version only oscillated the legs symmetrically with
-// the head locked forward and the root never moving — so on a front-facing
-// cutout character it read as "shuffling on the spot," not walking. A
-// believable 2D walk on a front-facing puppet needs three things layered
-// together, none of which existed before:
-//   1. TURN — head and body rotate a few degrees toward the travel
-//      direction so the pose visibly commits to "going that way" instead
-//      of staring at the camera. (We deliberately do NOT mirror the whole
-//      rig via root.scaleX=-1 for this — that would invert every limb's
+// This is an IN-PLACE gait cycle on purpose: the root never translates.
+// An earlier version moved root.x across the canvas to sell "travel," but
+// that meant the character visibly slid/snapped instead of just walking on
+// the spot — wrong for a puppet that's meant to stay where it's placed. If
+// on-screen travel is ever wanted, layer a separate position tween on top
+// of this clip rather than baking movement into the gait itself.
+//
+// A believable in-place 2D walk on a front-facing puppet still needs:
+//   1. TURN — head and body rotate a few degrees toward the faced
+//      direction so the pose commits to "facing that way" instead of
+//      staring at the camera. (We deliberately do NOT mirror the whole rig
+//      via root.scaleX=-1 for this — that would invert every limb's
 //      calibrated rotation sign for the rest of the timeline, since
 //      rigCalibration measures sign once at rest. A small head/body lean
 //      sells direction without that side effect.)
-//   2. TRANSLATE — root.x actually moves across the canvas over the
-//      motion's duration, in the chosen direction, instead of leaving the
-//      character pinned in place.
-//   3. STRIDE — legs alternate (one forward while the other is back, with
-//      a brief lift) instead of mirroring each other symmetrically through
-//      the same arc, which is what made it look like a scissor/jog-on-spot
-//      rather than a step.
+//   2. STRIDE — legs alternate (one forward while the other is back, with
+//      a brief lift) instead of mirroring each other symmetrically.
+//   3. SYNCED ARM SWING — arms counter-swing opposite their same-side leg,
+//      using the exact same quarter-cycle keyframe grid as the legs (not
+//      just matching extremes) so both limbs share identical easing
+//      segments and read as one connected motion instead of drifting.
 //
-// `opts.side` is reused as the travel direction ('right' = walks toward
-// screen-right, the default; 'left' = walks toward screen-left) — no new
-// schema field needed, since the LLM/UI already produce `side`.
-function gaitMotion(boneMap, calibration, opts, { stepDeg, bobAmount, cycleMs, liftDeg, turnDeg, travelPxPerCycle, kneeBendDeg, elbowBendDeg }) {
-  // If the caller asked for a specific number of strides (opts.count), this
-  // is a one-shot clip meant to net-displace the character — e.g. "walk 3
-  // steps". Otherwise (no count given) this motion may be played in a
-  // LOOPED preview/idle context, where net-translating root.x would cause
-  // a visible snap back to the start position at the loop seam (the engine
-  // interpolates last-keyframe -> first-keyframe to close a loop, so a
-  // continuously-increasing position "rewinds" instantly). In that case we
-  // still move, but out-and-back within the clip so it loops seamlessly.
+// `opts.side` is reused as the facing direction ('right' = faces
+// screen-right, the default; 'left' = faces screen-left) — no new schema
+// field needed, since the LLM/UI already produce `side`.
+function gaitMotion(boneMap, calibration, opts, { stepDeg, bobAmount, cycleMs, liftDeg, turnDeg, kneeBendDeg, elbowBendDeg }) {
   const explicitCount = opts.count != null && opts.count > 0;
   const duration = opts.duration ?? (explicitCount ? opts.count * cycleMs : DEFAULT_DURATION * 2);
   const cycles = explicitCount ? opts.count : Math.max(1, Math.round(duration / cycleMs));
-  const dir = opts.side === 'left' ? -1 : 1; // +1 = travels toward screen-right
+  const dir = opts.side === 'left' ? -1 : 1; // +1 = faces screen-right
   const tracks = [];
 
-  // ── 1. TURN toward travel direction ──────────────────────────────────
+  // ── 1. TURN toward facing direction ──────────────────────────────────
   // Small, calibration-safe absolute offsets — not a full mirror — so this
   // never interacts with rigCalibration's measured rotation signs.
   // turnInMs/turnOutMs are clamped so the "hold" keyframe never lands
@@ -134,36 +126,7 @@ function gaitMotion(boneMap, calibration, opts, { stepDeg, bobAmount, cycleMs, l
     ]));
   }
 
-  // ── 2. TRANSLATE across the canvas ───────────────────────────────────
-  if (boneMap.root) {
-    const moveKfs = [[0, 0, EASE.EASE_OUT]];
-    if (explicitCount) {
-      // One-shot: net forward by travelPxPerCycle per stride.
-      for (let i = 1; i <= cycles; i++) {
-        moveKfs.push([i * cycleMs, dir * travelPxPerCycle * i, EASE.EASE_BOTH]);
-      }
-    } else {
-      // Loop-safe: walk out for the first half of the cycles, then back to
-      // exactly 0 by the last cycle, so a looped preview has no seam/snap.
-      // Built as an explicit triangular path (peak at the midpoint) so it
-      // is correct even for cycles=1 (peaks and returns within one cycle)
-      // without ever emitting two different values at the same timestamp.
-      const peakCycle = cycles / 2;
-      for (let i = 1; i <= cycles; i++) {
-        const value = i <= peakCycle
-          ? dir * travelPxPerCycle * i
-          : dir * travelPxPerCycle * (cycles - i);
-        moveKfs.push([i * cycleMs, value, EASE.EASE_BOTH]);
-      }
-      // Guarantee the very last keyframe is exactly 0 (closes the loop)
-      // without duplicating the timestamp pushed just above.
-      const last = moveKfs[moveKfs.length - 1];
-      if (last[1] !== 0) last[1] = 0;
-    }
-    tracks.push(track(boneMap.root, 'x', moveKfs));
-  }
-
-  // ── 3. STRIDE: legs alternate contact/passing/lift instead of a
+  // ── 2. STRIDE: legs alternate contact/passing/lift instead of a
   // symmetric scissor. Each leg's cycle: back (contact) -> forward
   // (contact), with a brief upward lift (negative rotation bias) during
   // its "swing" half so it visually clears the ground between steps.
@@ -190,7 +153,7 @@ function gaitMotion(boneMap, calibration, opts, { stepDeg, bobAmount, cycleMs, l
       ], cycleMs, cycles,
     ), EASE.EASE_BOTH));
   }
-  // ── 3b. KNEE BEND — the lower leg is a CHILD bone of leftLeg/rightLeg,
+  // ── 2b. KNEE BEND — the lower leg is a CHILD bone of leftLeg/rightLeg,
   // so its rotation here is RELATIVE to the thigh, not absolute. A real
   // walking knee is nearly straight at both footfalls (heel-strike and
   // toe-off) and flexes hardest during the SWING half of that same leg's
@@ -226,25 +189,49 @@ function gaitMotion(boneMap, calibration, opts, { stepDeg, bobAmount, cycleMs, l
     ), EASE.EASE_BOTH));
   }
 
-  // Arms swing opposite their same-side leg (natural counter-swing).
+  // Arms swing opposite their same-side leg (natural counter-swing), on
+  // the SAME 0/0.25/0.5/0.75/cycle keyframe grid as the legs above — not
+  // just matching peak values at t=0 and t=cycle/2. Previously the arms
+  // only had 2 keyframe segments per cycle (a plain half-cycle swing)
+  // while the legs had 4 uneven segments (contact/swing/contact/roll), so
+  // even though the extremes lined up in time, the eased velocity curves
+  // didn't — the arms visibly lagged/floated relative to the legs' snappier
+  // stride. Adding explicit zero-crossing keyframes at the same 0.25/0.75
+  // timestamps the legs already use locks both limbs to identical easing
+  // segments so they read as one connected motion.
+  const armFwd = stepDeg * 0.55;
   if (boneMap.leftArm) {
     tracks.push(track(boneMap.leftArm, 'rotation', repeatCycle(
-      [[0, stepDeg * 0.5], [cycleMs / 2, -stepDeg * 0.5], [cycleMs, stepDeg * 0.5]], cycleMs, cycles,
+      [
+        [0, armFwd],                 // forward — pairs with rightLeg forward
+        [cycleMs * 0.25, 0],
+        [cycleMs * 0.5, -armFwd],    // back — pairs with rightLeg back
+        [cycleMs * 0.75, 0],
+        [cycleMs, armFwd],
+      ], cycleMs, cycles,
     ), EASE.EASE_BOTH));
   }
   if (boneMap.rightArm) {
+    // Exact mirror of leftArm, so right arm forward always coincides with
+    // leftLeg forward (contralateral swing), matching a natural gait.
     tracks.push(track(boneMap.rightArm, 'rotation', repeatCycle(
-      [[0, -stepDeg * 0.5], [cycleMs / 2, stepDeg * 0.5], [cycleMs, -stepDeg * 0.5]], cycleMs, cycles,
+      [
+        [0, -armFwd],
+        [cycleMs * 0.25, 0],
+        [cycleMs * 0.5, armFwd],
+        [cycleMs * 0.75, 0],
+        [cycleMs, -armFwd],
+      ], cycleMs, cycles,
     ), EASE.EASE_BOTH));
   }
 
-  // ── 3c. ELBOW BEND — same idea as the knee: the forearm is a CHILD of
+  // ── 2c. ELBOW BEND — same idea as the knee: the forearm is a CHILD of
   // leftArm/rightArm, so this rotation is relative to the upper arm, not
   // absolute. A swinging arm flexes slightly at the elbow as it comes
   // forward (so the hand doesn't overshoot ahead of the body on too long
   // an "arc") and straightens as it swings back. leftArm's forward extreme
-  // is its t=0/cycle value (+stepDeg*0.5); rightArm's forward extreme is at
-  // cycleMs/2 (+stepDeg*0.5) — i.e. each elbow bends most exactly when its
+  // is its t=0/cycle value (+armFwd); rightArm's forward extreme is at
+  // cycleMs/2 (+armFwd) — i.e. each elbow bends most exactly when its
   // own arm track is at its positive (forward) peak, and straightens at the
   // negative (back) peak, the same phase relationship a real arm swing has.
   const elbowBend = elbowBendDeg ?? stepDeg * 0.5;
@@ -278,14 +265,14 @@ function gaitMotion(boneMap, calibration, opts, { stepDeg, bobAmount, cycleMs, l
 
 export function createWalkMotion(boneMap, calibration, opts = {}) {
   return gaitMotion(boneMap, calibration, opts, {
-    stepDeg: 18, bobAmount: 4, cycleMs: 600, liftDeg: 10, turnDeg: 8, travelPxPerCycle: 40,
+    stepDeg: 18, bobAmount: 4, cycleMs: 600, liftDeg: 10, turnDeg: 8,
     kneeBendDeg: 28, elbowBendDeg: 12,
   });
 }
 
 export function createRunMotion(boneMap, calibration, opts = {}) {
   return gaitMotion(boneMap, calibration, opts, {
-    stepDeg: 32, bobAmount: 8, cycleMs: 360, liftDeg: 22, turnDeg: 12, travelPxPerCycle: 70,
+    stepDeg: 32, bobAmount: 8, cycleMs: 360, liftDeg: 22, turnDeg: 12,
     kneeBendDeg: 55, elbowBendDeg: 24,
   });
 }

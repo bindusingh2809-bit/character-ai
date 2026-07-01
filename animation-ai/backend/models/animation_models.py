@@ -54,9 +54,26 @@ class AnimationPlan(BaseModel):
     actions: List[AnimationAction] = Field(min_length=1, max_length=20)
 
 
+BYOK_PROVIDERS = ("anthropic", "openai", "gemini")
+
+
 class GenerateAnimationRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=500)
-    model: Optional[str] = None  # optional override of OPENROUTER_MODEL
+    model: Optional[str] = None  # optional override of OPENROUTER_MODEL / BYOK default model
+
+    # BYOK ("bring your own key") fields. When provider is one of
+    # BYOK_PROVIDERS, api_key is required and the request is routed straight
+    # to that provider using the caller's own key instead of this server's
+    # configured ANIMATION_PROVIDER. The key is used only for the duration
+    # of this request — never logged, stored, or echoed back.
+    provider: Optional[Literal["anthropic", "openai", "gemini"]] = None
+    api_key: Optional[str] = Field(default=None, max_length=300, repr=False)
+
+    def __repr__(self) -> str:  # pragma: no cover - defensive against accidental logging
+        return (
+            f"GenerateAnimationRequest(prompt={self.prompt!r}, model={self.model!r}, "
+            f"provider={self.provider!r}, api_key={'<redacted>' if self.api_key else None})"
+        )
 
 
 class GenerateAnimationResponse(AnimationPlan):

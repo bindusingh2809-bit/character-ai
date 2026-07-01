@@ -455,12 +455,15 @@ export default function CanvasViewport({
   saveRef, loadRef, resetRef,
   exportCaptureRef, thumbCaptureRef,
   importSkinRef,
+  deleteSkinRef,
+  renameSkinRef,
 }) {
   const canvasRef = useRef(null);
   const sceneRef = useRef(null);
   const rafRef = useRef(null);
   const workersRef = useRef(new Map());  // Map<partId, Worker> for concurrent mesh generation
   const lastUploadedSourcesRef = useRef(new Map()); // Map<partId, string> (source URI)
+  const lastUploadedSkinSourcesRef = useRef(new Map()); // Map<'skinId:partId', url> for skin GPU sync
   const imageDataMapRef = useRef(new Map()); // Map<partId, ImageData> for alpha-based picking
   const dragRef = useRef(null);   // { partId, vertexIndex, startWorldX, startWorldY, startLocalX, startLocalY }
   const panRef = useRef(null);   // { startX, startY, panX0, panY0 }
@@ -571,7 +574,37 @@ export default function CanvasViewport({
         }
       }
     }
-  }, [project.nodes, project.textures, versionControl.textureVersion]);
+
+    // ── Skin Texture GPU Re-sync ──────────────────────────────────────────────
+    // The renderer's _skinTextures map lives only in GPU memory. If the scene
+    // is recreated (resize, context loss, hot reload) or the effect re-runs
+    // after setActiveSkin, skin textures must be re-uploaded from the store URLs.
+    const activeSkin = project.activeSkin;
+    if (activeSkin && project.skins?.[activeSkin]) {
+      const skinMap = project.skins[activeSkin]; // { [partId]: url }
+      for (const [partId, url] of Object.entries(skinMap)) {
+        if (!url) continue;
+        const gpuKey = activeSkin + ':' + partId;
+        const alreadyUploaded = scene.parts.getSkinTexture(activeSkin, partId);
+        const lastUrl = lastUploadedSkinSourcesRef.current.get(gpuKey);
+        if (!alreadyUploaded || lastUrl !== url) {
+          const urlToLoad = url;
+          const img = new Image();
+          img.onload = () => {
+            if (sceneRef.current?.parts) {
+              sceneRef.current.parts.uploadSkinTexture(activeSkin, partId, img);
+              lastUploadedSkinSourcesRef.current.set(gpuKey, urlToLoad);
+              isDirtyRef.current = true;
+            }
+          };
+          img.onerror = () => {
+            console.warn('[SkinSync] Failed to load skin texture for part', partId);
+          };
+          img.src = urlToLoad;
+        }
+      }
+    }
+  }, [project.nodes, project.textures, project.skins, project.activeSkin, versionControl.textureVersion]);
 
   const centerView = useCallback((contentW, contentH) => {
     const canvas = canvasRef.current;
@@ -2243,6 +2276,45 @@ export default function CanvasViewport({
   }, [importPsdAsSkin, importPngAsSkin]);
 
   useEffect(() => { if (importSkinRef) importSkinRef.current = importSkinFile; }, [importSkinRef, importSkinFile]);
+
+  // GPU-aware delete: destroy GPU textures + clear tracking ref + call store action
+  useEffect(() => {
+    if (!deleteSkinRef) return;
+    deleteSkinRef.current = (skinId) => {
+      const scene = sceneRef.current;
+      if (scene?.parts?.destroySkin) scene.parts.destroySkin(skinId);
+      // Clear tracking entries for this skin
+      const prefix = skinId + ':';
+      for (const key of lastUploadedSkinSourcesRef.current.keys()) {
+        if (key.startsWith(prefix)) lastUploadedSkinSourcesRef.current.delete(key);
+      }
+      deleteSkin(skinId);
+    };
+  }, [deleteSkinRef, deleteSkin]);
+
+  // GPU-aware rename: move GPU textures to new key + update tracking ref + call store action
+  useEffect(() => {
+    if (!renameSkinRef) return;
+    renameSkinRef.current = (oldId, newId) => {
+      const scene = sceneRef.current;
+      if (scene?.parts) {
+        // Re-register each skin texture under the new skinId key
+        const oldPrefix = oldId + ':';
+        for (const [key] of lastUploadedSkinSourcesRef.current) {
+          if (key.startsWith(oldPrefix)) {
+            const partId = key.slice(oldPrefix.length);
+            const tex = scene.parts.getSkinTexture(oldId, partId);
+            if (tex) scene.parts._skinTextures.set(newId + ':' + partId, tex);
+            scene.parts._skinTextures.delete(key);
+            const url = lastUploadedSkinSourcesRef.current.get(key);
+            lastUploadedSkinSourcesRef.current.set(newId + ':' + partId, url);
+            lastUploadedSkinSourcesRef.current.delete(key);
+          }
+        }
+      }
+      renameSkin(oldId, newId);
+    };
+  }, [renameSkinRef, renameSkin]);
 
   const importPsdFile = useCallback((file) => {
     const proj = projectRef.current;

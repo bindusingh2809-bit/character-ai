@@ -1,5 +1,5 @@
 """Stretchy Studio AI Animation backend.
-
+..-*-..-*-..-*-..-*-..-*-..-*-..-*-..
 Run with:
     uvicorn backend.main:app --reload --port 8000
 """
@@ -47,7 +47,7 @@ async def supported_actions():
 @app.post("/api/generate-animation", response_model=GenerateAnimationResponse)
 async def generate_animation(req: GenerateAnimationRequest) -> AnimationPlan:
     try:
-        plan = await generate_animation_plan(req.prompt, model=req.model)
+        plan = await generate_animation_plan(req)
     except AnimationServiceError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return plan

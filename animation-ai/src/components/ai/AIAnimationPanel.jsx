@@ -11,6 +11,7 @@ import { parseAnimationPlan, InvalidAnimationPlanError } from '@/ai/animationMod
 import { generateTimeline, UnsupportedActionError } from '@/ai/timelineGenerator';
 import { resolveBoneMap } from '@/ai/boneMapping';
 import { calibrateRig, getCalibrationWarnings } from '@/ai/motions/rigCalibration';
+import { ApiKeySettings } from './ApiKeySettings';
 
 const PREVIEW_NAME = '__ai_preview__';
 
@@ -158,6 +159,8 @@ export function AIAnimationPanel() {
           AI Animation Generator
         </h2>
       </div>
+
+      <ApiKeySettings />
 
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
         <Textarea

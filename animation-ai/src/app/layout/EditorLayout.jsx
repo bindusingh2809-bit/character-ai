@@ -64,6 +64,8 @@ export default function EditorLayout() {
   const remeshRef = useRef(null);
   const deleteMeshRef = useRef(null);
   const importSkinRef = useRef(null);
+  const deleteSkinRef = useRef(null);
+  const renameSkinRef = useRef(null);
 
   const handleRemesh = useCallback((partId, opts) => {
     remeshRef.current?.(partId, opts);
@@ -550,6 +552,8 @@ export default function EditorLayout() {
                   remeshRef={remeshRef}
                   deleteMeshRef={deleteMeshRef}
                   importSkinRef={importSkinRef}
+                  deleteSkinRef={deleteSkinRef}
+                  renameSkinRef={renameSkinRef}
                   saveRef={saveRef}
                   loadRef={loadRef}
                   resetRef={resetRef}
@@ -589,8 +593,8 @@ export default function EditorLayout() {
                       <SkinsPanel
                         project={project}
                         setActiveSkin={setActiveSkin}
-                        deleteSkin={deleteSkin}
-                        renameSkin={renameSkin}
+                        deleteSkin={(skinId) => deleteSkinRef.current?.(skinId)}
+                        renameSkin={(oldId, newId) => renameSkinRef.current?.(oldId, newId)}
                         onImportSkin={(file, skinId) => importSkinRef.current?.(file, skinId)}
                       />
                       <div className="px-3 py-2 border-b shrink-0 flex items-center justify-between">
